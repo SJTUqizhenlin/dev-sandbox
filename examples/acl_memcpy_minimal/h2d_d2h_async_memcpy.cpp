@@ -46,6 +46,41 @@ double BandwidthMBps(std::size_t bytes, double avgTotalUs)
     return megabytes / seconds;
 }
 
+std::string SizeLabel(std::size_t bytes)
+{
+    const std::size_t mb = 1024 * 1024;
+    const std::size_t kb = 1024;
+    if (bytes % mb == 0) {
+        return std::to_string(bytes / mb) + " MB";
+    }
+    if (bytes % kb == 0) {
+        return std::to_string(bytes / kb) + " KB";
+    }
+    return std::to_string(bytes) + " B";
+}
+
+void PrintTableHeader()
+{
+    std::cout << "AscendCL aclrtMemcpyAsync H2D/D2H benchmark\n"
+              << "warmup=" << kWarmupIterations << ", iterations=" << kMeasureIterations
+              << ", device=" << kDeviceId << "\n\n";
+
+    std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
+              << std::setw(14) << "Submit(us)" << std::setw(14) << "Wait(us)"
+              << std::setw(14) << "Total(us)" << std::setw(16) << "BW(MB/s)" << "\n";
+    std::cout << std::string(78, '-') << "\n";
+}
+
+void PrintTableRow(const std::string& direction, std::size_t bytes, double avgSubmitUs,
+                   double avgWaitUs, double avgTotalUs)
+{
+    std::cout << std::left << std::setw(8) << direction << std::right << std::setw(12)
+              << SizeLabel(bytes) << std::fixed << std::setprecision(3) << std::setw(14)
+              << avgSubmitUs << std::setw(14) << avgWaitUs << std::setw(14) << avgTotalUs
+              << std::setprecision(2) << std::setw(16) << BandwidthMBps(bytes, avgTotalUs)
+              << "\n";
+}
+
 void FillHostData(void* data, std::size_t size)
 {
     unsigned char* p = static_cast<unsigned char*>(data);
@@ -90,9 +125,7 @@ bool RunOneDirection(const std::string& direction, void* dst, std::size_t destMa
     const double avgTotalUs = totalUs / kMeasureIterations;
     const double avgWaitUs = avgTotalUs - avgSubmitUs;
 
-    std::cout << direction << "," << count << "," << std::fixed << std::setprecision(3)
-              << avgSubmitUs << "," << avgWaitUs << "," << avgTotalUs << ","
-              << BandwidthMBps(count, avgTotalUs) << "\n";
+    PrintTableRow(direction, count, avgSubmitUs, avgWaitUs, avgTotalUs);
     return true;
 }
 
@@ -188,8 +221,7 @@ int main()
             1024 * 1024,    4 * 1024 * 1024, 16 * 1024 * 1024,
         };
 
-        std::cout << "direction,size_bytes,avg_submit_us,avg_wait_us,avg_total_us,"
-                     "bandwidth_MBps\n";
+        PrintTableHeader();
         for (std::size_t size : sizes) {
             if (!RunSize(size, stream)) {
                 ok = false;

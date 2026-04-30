@@ -5,8 +5,8 @@ This demo is a small, standalone example for learning the basic AscendCL
 into the repository CMake build.
 
 The program measures asynchronous Host-to-Device (H2D) and Device-to-Host (D2H)
-copies for several buffer sizes. It prints CSV-style output that can be saved and
-plotted later.
+copies for several buffer sizes. It prints an aligned terminal table for quick
+reading.
 
 ## What It Shows
 
@@ -49,7 +49,7 @@ directly and does not create unaligned offsets.
 The output columns are:
 
 ```text
-direction,size_bytes,avg_submit_us,avg_wait_us,avg_total_us,bandwidth_MBps
+Dir          Size    Submit(us)      Wait(us)     Total(us)        BW(MB/s)
 ```
 
 - `avg_submit_us`: average time spent inside the `aclrtMemcpyAsync` call. This
@@ -87,7 +87,11 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRAR
 Example output:
 
 ```text
-direction,size_bytes,avg_submit_us,avg_wait_us,avg_total_us,bandwidth_MBps
-H2D,4096,3.200,14.500,17.700,220.692
-D2H,4096,3.100,15.200,18.300,213.485
+AscendCL aclrtMemcpyAsync H2D/D2H benchmark
+warmup=5, iterations=50, device=0
+
+Dir             Size    Submit(us)      Wait(us)     Total(us)        BW(MB/s)
+------------------------------------------------------------------------------
+H2D             4 KB         3.200        14.500        17.700          220.69
+D2H             4 KB         3.100        15.200        18.300          213.48
 ```
