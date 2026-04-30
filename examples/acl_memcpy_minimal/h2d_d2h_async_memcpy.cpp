@@ -14,6 +14,7 @@ namespace {
 constexpr int kDeviceId = 0;
 constexpr int kWarmupIterations = 5;
 constexpr int kMeasureIterations = 50;
+constexpr std::size_t kBufferCount = 8;
 
 bool CheckAcl(aclError ret, const char* expr, const char* file, int line)
 {
@@ -59,26 +60,39 @@ std::string SizeLabel(std::size_t bytes)
     return std::to_string(bytes) + " B";
 }
 
+struct CopyBuffers {
+    std::vector<void*> hostSrc;
+    std::vector<void*> hostDst;
+    std::vector<void*> device;
+};
+
+struct Timing {
+    double submitUs = 0.0;
+    double copyUs = 0.0;
+};
+
 void PrintTableHeader()
 {
     std::cout << "AscendCL aclrtMemcpyAsync H2D/D2H benchmark\n"
               << "warmup=" << kWarmupIterations << ", iterations=" << kMeasureIterations
-              << ", device=" << kDeviceId << "\n\n";
+              << ", buffers_per_iteration=" << kBufferCount << ", device=" << kDeviceId
+              << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
-              << std::setw(14) << "Submit(us)" << std::setw(14) << "Wait(us)"
-              << std::setw(14) << "Total(us)" << std::setw(16) << "BW(MB/s)" << "\n";
-    std::cout << std::string(78, '-') << "\n";
+              << std::setw(8) << "Count" << std::setw(14) << "Submit(us)" << std::setw(14)
+              << "Wait(us)" << std::setw(14) << "Copy(us)" << std::setw(16) << "BW(MB/s)"
+              << "\n";
+    std::cout << std::string(86, '-') << "\n";
 }
 
-void PrintTableRow(const std::string& direction, std::size_t bytes, double avgSubmitUs,
-                   double avgWaitUs, double avgTotalUs)
+void PrintTableRow(const std::string& direction, std::size_t bytes, std::size_t count,
+                   double avgSubmitUs, double avgWaitUs, double avgCopyUs)
 {
     std::cout << std::left << std::setw(8) << direction << std::right << std::setw(12)
-              << SizeLabel(bytes) << std::fixed << std::setprecision(3) << std::setw(14)
-              << avgSubmitUs << std::setw(14) << avgWaitUs << std::setw(14) << avgTotalUs
-              << std::setprecision(2) << std::setw(16) << BandwidthMBps(bytes, avgTotalUs)
-              << "\n";
+              << SizeLabel(bytes) << std::setw(8) << count << std::fixed << std::setprecision(3)
+              << std::setw(14) << avgSubmitUs << std::setw(14) << avgWaitUs << std::setw(14)
+              << avgCopyUs << std::setprecision(2) << std::setw(16)
+              << BandwidthMBps(bytes * count, avgCopyUs) << "\n";
 }
 
 void FillHostData(void* data, std::size_t size)
@@ -89,100 +103,177 @@ void FillHostData(void* data, std::size_t size)
     }
 }
 
-bool RunOneDirection(const std::string& direction, void* dst, std::size_t destMax, const void* src,
-                     std::size_t count, aclrtMemcpyKind kind, aclrtStream stream)
+bool MeasureCopyOnce(const std::vector<void*>& dst, const std::vector<void*>& src,
+                     std::size_t size, aclrtMemcpyKind kind, aclrtStream stream, aclrtEvent start,
+                     aclrtEvent end, Timing* timing)
 {
-    for (int i = 0; i < kWarmupIterations; ++i) {
-        // aclrtMemcpyAsync only submits work to the stream; it may return before the copy finishes.
-        if (!CHECK_ACL(aclrtMemcpyAsync(dst, destMax, src, count, kind, stream))) {
+    // The original benchmark records events around a batch of async copies.
+    if (!CHECK_ACL(aclrtRecordEvent(start, stream))) {
+        return false;
+    }
+
+    auto submitBegin = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        // dst: destination address; destMax: destination capacity; src: source address;
+        // count: bytes to copy; kind: copy direction; stream: async execution queue.
+        if (!CHECK_ACL(aclrtMemcpyAsync(dst[i], size, src[i], size, kind, stream))) {
             return false;
         }
+    }
+    auto submitEnd = std::chrono::steady_clock::now();
 
-        // aclrtSynchronizeStream waits until all previously submitted work in this stream completes.
-        if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
-            return false;
+    if (!CHECK_ACL(aclrtRecordEvent(end, stream))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
+        return false;
+    }
+
+    float copyMs = 0.0f;
+    if (!CHECK_ACL(aclrtEventElapsedTime(&copyMs, start, end))) {
+        return false;
+    }
+    timing->submitUs = ElapsedUs(submitBegin, submitEnd);
+    timing->copyUs = static_cast<double>(copyMs) * 1000.0;
+    return true;
+}
+
+bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst,
+                     const std::vector<void*>& src, std::size_t size, aclrtMemcpyKind kind,
+                     aclrtStream stream)
+{
+    aclrtEvent start = nullptr;
+    aclrtEvent end = nullptr;
+    if (!CHECK_ACL(aclrtCreateEvent(&start))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtCreateEvent(&end))) {
+        aclrtDestroyEvent(start);
+        return false;
+    }
+
+    bool ok = true;
+    for (int i = 0; i < kWarmupIterations; ++i) {
+        Timing timing;
+        if (!MeasureCopyOnce(dst, src, size, kind, stream, start, end, &timing)) {
+            ok = false;
+            break;
         }
     }
 
     double submitUs = 0.0;
-    double totalUs = 0.0;
-    for (int i = 0; i < kMeasureIterations; ++i) {
-        auto submitBegin = std::chrono::steady_clock::now();
-        if (!CHECK_ACL(aclrtMemcpyAsync(dst, destMax, src, count, kind, stream))) {
-            return false;
+    double copyUs = 0.0;
+    if (ok) {
+        for (int i = 0; i < kMeasureIterations; ++i) {
+            Timing timing;
+            if (!MeasureCopyOnce(dst, src, size, kind, stream, start, end, &timing)) {
+                ok = false;
+                break;
+            }
+            submitUs += timing.submitUs;
+            copyUs += timing.copyUs;
         }
-        auto submitEnd = std::chrono::steady_clock::now();
-        if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
-            return false;
-        }
-        auto totalEnd = std::chrono::steady_clock::now();
+    }
 
-        submitUs += ElapsedUs(submitBegin, submitEnd);
-        totalUs += ElapsedUs(submitBegin, totalEnd);
+    if (start != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
+    }
+    if (end != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
+    }
+
+    if (!ok) {
+        return false;
     }
 
     const double avgSubmitUs = submitUs / kMeasureIterations;
-    const double avgTotalUs = totalUs / kMeasureIterations;
-    const double avgWaitUs = avgTotalUs - avgSubmitUs;
+    const double avgCopyUs = copyUs / kMeasureIterations;
+    const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableRow(direction, count, avgSubmitUs, avgWaitUs, avgTotalUs);
+    PrintTableRow(direction, size, src.size(), avgSubmitUs, avgWaitUs, avgCopyUs);
+    return ok;
+}
+
+bool AllocateBuffers(std::size_t size, CopyBuffers* buffers)
+{
+    buffers->hostSrc.assign(kBufferCount, nullptr);
+    buffers->hostDst.assign(kBufferCount, nullptr);
+    buffers->device.assign(kBufferCount, nullptr);
+
+    for (std::size_t i = 0; i < kBufferCount; ++i) {
+        // aclrtMallocHost allocates page-locked host memory suitable for DMA transfers.
+        if (!CHECK_ACL(aclrtMallocHost(&buffers->hostSrc[i], size))) {
+            return false;
+        }
+        if (!CHECK_ACL(aclrtMallocHost(&buffers->hostDst[i], size))) {
+            return false;
+        }
+
+        // aclrtMalloc allocates memory on the current Ascend device.
+        if (!CHECK_ACL(aclrtMalloc(&buffers->device[i], size, ACL_MEM_MALLOC_HUGE_FIRST))) {
+            return false;
+        }
+
+        FillHostData(buffers->hostSrc[i], size);
+        std::memset(buffers->hostDst[i], 0, size);
+    }
     return true;
+}
+
+bool FreeBuffers(CopyBuffers* buffers)
+{
+    bool ok = true;
+    for (void* ptr : buffers->device) {
+        if (ptr != nullptr) {
+            aclError ret = aclrtFree(ptr);
+            if (ret != ACL_SUCCESS) {
+                std::cerr << "aclrtFree failed, error code: " << ret << "\n";
+                ok = false;
+            }
+        }
+    }
+    for (void* ptr : buffers->hostDst) {
+        if (ptr != nullptr) {
+            aclError ret = aclrtFreeHost(ptr);
+            if (ret != ACL_SUCCESS) {
+                std::cerr << "aclrtFreeHost(hostDst) failed, error code: " << ret << "\n";
+                ok = false;
+            }
+        }
+    }
+    for (void* ptr : buffers->hostSrc) {
+        if (ptr != nullptr) {
+            aclError ret = aclrtFreeHost(ptr);
+            if (ret != ACL_SUCCESS) {
+                std::cerr << "aclrtFreeHost(hostSrc) failed, error code: " << ret << "\n";
+                ok = false;
+            }
+        }
+    }
+    return ok;
 }
 
 bool RunSize(std::size_t size, aclrtStream stream)
 {
-    void* hostSrc = nullptr;
-    void* hostDst = nullptr;
-    void* deviceBuf = nullptr;
+    CopyBuffers buffers;
     bool ok = true;
-
-    // aclrtMallocHost allocates page-locked host memory suitable for DMA transfers.
-    ok = ok && CHECK_ACL(aclrtMallocHost(&hostSrc, size));
-    ok = ok && CHECK_ACL(aclrtMallocHost(&hostDst, size));
-
-    // aclrtMalloc allocates memory on the current Ascend device.
-    ok = ok && CHECK_ACL(aclrtMalloc(&deviceBuf, size, ACL_MEM_MALLOC_HUGE_FIRST));
-
-    if (ok) {
-        FillHostData(hostSrc, size);
-        std::memset(hostDst, 0, size);
-    }
+    ok = AllocateBuffers(size, &buffers);
 
     // H2D: dst is device memory, destMax is device buffer size, src is host memory,
     // count is the bytes to copy, kind selects Host-to-Device, stream carries the async work.
     if (ok) {
-        ok = RunOneDirection("H2D", deviceBuf, size, hostSrc, size, ACL_MEMCPY_HOST_TO_DEVICE,
-                             stream);
+        ok = RunOneDirection("H2D", buffers.device, buffers.hostSrc, size,
+                             ACL_MEMCPY_HOST_TO_DEVICE, stream);
     }
 
     if (ok) {
         // D2H reads back from the same device buffer into host memory.
-        ok = RunOneDirection("D2H", hostDst, size, deviceBuf, size, ACL_MEMCPY_DEVICE_TO_HOST,
-                             stream);
+        ok = RunOneDirection("D2H", buffers.hostDst, buffers.device, size,
+                             ACL_MEMCPY_DEVICE_TO_HOST, stream);
     }
 
     // aclrtFree releases device memory; aclrtFreeHost releases host memory.
-    if (deviceBuf != nullptr) {
-        aclError ret = aclrtFree(deviceBuf);
-        if (ret != ACL_SUCCESS) {
-            std::cerr << "aclrtFree failed, error code: " << ret << "\n";
-            ok = false;
-        }
-    }
-    if (hostDst != nullptr) {
-        aclError ret = aclrtFreeHost(hostDst);
-        if (ret != ACL_SUCCESS) {
-            std::cerr << "aclrtFreeHost(hostDst) failed, error code: " << ret << "\n";
-            ok = false;
-        }
-    }
-    if (hostSrc != nullptr) {
-        aclError ret = aclrtFreeHost(hostSrc);
-        if (ret != ACL_SUCCESS) {
-            std::cerr << "aclrtFreeHost(hostSrc) failed, error code: " << ret << "\n";
-            ok = false;
-        }
-    }
+    ok = FreeBuffers(&buffers) && ok;
 
     return ok;
 }

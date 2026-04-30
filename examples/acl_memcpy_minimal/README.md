@@ -5,8 +5,10 @@ This demo is a small, standalone example for learning the basic AscendCL
 into the repository CMake build.
 
 The program measures asynchronous Host-to-Device (H2D) and Device-to-Host (D2H)
-copies for several buffer sizes. It prints an aligned terminal table for quick
-reading.
+copies for several buffer sizes. For each measurement iteration, it submits a
+small batch of async copies to one stream and then synchronizes once. This keeps
+the demo close to the main project's simple CE benchmark while still being easy
+to read.
 
 ## What It Shows
 
@@ -17,7 +19,7 @@ The program follows this basic runtime flow:
 3. `aclrtCreateStream` creates a stream for asynchronous work.
 4. `aclrtMallocHost` allocates pinned host memory.
 5. `aclrtMalloc` allocates device memory.
-6. `aclrtMemcpyAsync` submits an asynchronous memory copy to the stream.
+6. `aclrtMemcpyAsync` submits several asynchronous memory copies to the stream.
 7. `aclrtSynchronizeStream` waits until the submitted copy has finished.
 8. `aclrtFree`, `aclrtFreeHost`, `aclrtDestroyStream`, `aclrtResetDevice`, and
    `aclFinalize` release resources.
@@ -49,16 +51,17 @@ directly and does not create unaligned offsets.
 The output columns are:
 
 ```text
-Dir          Size    Submit(us)      Wait(us)     Total(us)        BW(MB/s)
+Dir          Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
 ```
 
-- `avg_submit_us`: average time spent inside the `aclrtMemcpyAsync` call. This
-  measures submission overhead, not full copy completion.
-- `avg_total_us`: average time from just before `aclrtMemcpyAsync` until
-  `aclrtSynchronizeStream` returns.
-- `avg_wait_us`: `avg_total_us - avg_submit_us`, roughly the time spent waiting
-  for the asynchronous copy to complete after submission.
-- `bandwidth_MBps`: effective bandwidth computed from `avg_total_us`.
+- `Size`: bytes per buffer, printed in a human-readable unit.
+- `Count`: number of buffers copied per measurement iteration.
+- `Submit(us)`: average CPU-side time spent submitting the batch of
+  `aclrtMemcpyAsync` calls.
+- `Copy(us)`: average stream-side copy time measured by `aclrtRecordEvent` and
+  `aclrtEventElapsedTime`, matching the style used by the main benchmark.
+- `Wait(us)`: `Copy(us) - Submit(us)`, clamped at zero for display.
+- `BW(MB/s)`: effective bandwidth computed from `Size * Count / Copy(us)`.
 
 ## Build
 
@@ -88,10 +91,10 @@ Example output:
 
 ```text
 AscendCL aclrtMemcpyAsync H2D/D2H benchmark
-warmup=5, iterations=50, device=0
+warmup=5, iterations=50, buffers_per_iteration=8, device=0
 
-Dir             Size    Submit(us)      Wait(us)     Total(us)        BW(MB/s)
-------------------------------------------------------------------------------
-H2D             4 KB         3.200        14.500        17.700          220.69
-D2H             4 KB         3.100        15.200        18.300          213.48
+Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
+--------------------------------------------------------------------------------------
+H2D             4 KB       8         8.200        16.500        24.700         1265.18
+D2H             4 KB       8         7.900        17.300        25.200         1240.08
 ```
