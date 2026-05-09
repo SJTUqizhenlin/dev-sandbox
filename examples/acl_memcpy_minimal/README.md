@@ -1,14 +1,13 @@
-# Minimal AscendCL Async Memcpy Demo
+# Minimal AscendCL Async H2D Memcpy Demo
 
 This demo is a small, standalone example for learning the basic AscendCL
 `aclrtMemcpyAsync` flow. It does not depend on the main project and is not wired
 into the repository CMake build.
 
-The program measures asynchronous Host-to-Device (H2D) and Device-to-Host (D2H)
-copies for several buffer sizes. For each measurement iteration, it submits a
-small batch of async copies to one stream and then synchronizes once. This keeps
-the demo close to the main project's simple CE benchmark while still being easy
-to read.
+The program measures asynchronous Host-to-Device (H2D) copies for one requested
+buffer size and buffer count. For each measurement iteration, it submits a batch
+of async copies to one stream and then synchronizes once. This keeps the demo
+close to the main project's simple CE benchmark while still being easy to read.
 
 ## What It Shows
 
@@ -24,9 +23,7 @@ The program follows this basic runtime flow:
 8. `aclrtFree`, `aclrtFreeHost`, `aclrtDestroyStream`, `aclrtResetDevice`, and
    `aclFinalize` release resources.
 
-For H2D, the source pointer is host memory and the destination pointer is device
-memory. For D2H, the source pointer is device memory and the destination pointer
-is host memory.
+The source pointer is host memory and the destination pointer is device memory.
 
 `aclrtMemcpyAsync` has this important argument order:
 
@@ -84,17 +81,25 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRAR
 ## Run
 
 ```bash
-./h2d_d2h_async_memcpy
+./h2d_d2h_async_memcpy -s 64K -n 1024
 ```
+
+Options:
+
+```text
+-s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
+-n <buffer_count>  Number of buffers copied per measurement iteration.
+```
+
+The device is fixed to device 0 in this minimal demo.
 
 Example output:
 
 ```text
-AscendCL aclrtMemcpyAsync H2D/D2H benchmark
-warmup=5, iterations=50, buffers_per_iteration=8, device=0
+AscendCL aclrtMemcpyAsync H2D benchmark
+warmup=5, iterations=50, device=0
 
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
 --------------------------------------------------------------------------------------
-H2D             4 KB       8         8.200        16.500        24.700         1265.18
-D2H             4 KB       8         7.900        17.300        25.200         1240.08
+H2D            64 KB    1024       160.200      1839.800      2000.000        32000.00
 ```

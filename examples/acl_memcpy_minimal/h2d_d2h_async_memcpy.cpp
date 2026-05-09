@@ -1,6 +1,7 @@
 #include <acl/acl.h>
 
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,7 +15,14 @@ namespace {
 constexpr int kDeviceId = 0;
 constexpr int kWarmupIterations = 5;
 constexpr int kMeasureIterations = 50;
-constexpr std::size_t kBufferCount = 8;
+constexpr std::size_t kDefaultIoSize = 64 * 1024;
+constexpr std::size_t kDefaultBufferCount = 1024;
+
+struct Options {
+    std::size_t ioSize = kDefaultIoSize;
+    std::size_t bufferCount = kDefaultBufferCount;
+    bool showHelp = false;
+};
 
 bool CheckAcl(aclError ret, const char* expr, const char* file, int line)
 {
@@ -49,8 +57,12 @@ double BandwidthMBps(std::size_t bytes, double avgTotalUs)
 
 std::string SizeLabel(std::size_t bytes)
 {
+    const std::size_t gb = 1024ull * 1024ull * 1024ull;
     const std::size_t mb = 1024 * 1024;
     const std::size_t kb = 1024;
+    if (bytes % gb == 0) {
+        return std::to_string(bytes / gb) + " GB";
+    }
     if (bytes % mb == 0) {
         return std::to_string(bytes / mb) + " MB";
     }
@@ -60,9 +72,98 @@ std::string SizeLabel(std::size_t bytes)
     return std::to_string(bytes) + " B";
 }
 
+void PrintUsage(const char* prog)
+{
+    std::cout << "Usage: " << (prog != nullptr ? prog : "h2d_async_memcpy")
+              << " [-s <io_size>] [-n <buffer_count>]\n"
+              << "\n"
+              << "Options:\n"
+              << "  -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported."
+              << " Default: " << SizeLabel(kDefaultIoSize) << "\n"
+              << "  -n <buffer_count>  Number of buffers per measurement iteration."
+              << " Default: " << kDefaultBufferCount << "\n"
+              << "  -h                 Show this help message.\n";
+}
+
+bool ParseSize(const std::string& text, std::size_t* value)
+{
+    if (text.empty() || value == nullptr) {
+        return false;
+    }
+
+    std::string number = text;
+    std::size_t multiplier = 1;
+    const char suffix = static_cast<char>(std::toupper(static_cast<unsigned char>(text.back())));
+    if (suffix == 'K' || suffix == 'M' || suffix == 'G') {
+        number.pop_back();
+        if (suffix == 'K') {
+            multiplier = 1024ull;
+        } else if (suffix == 'M') {
+            multiplier = 1024ull * 1024ull;
+        } else {
+            multiplier = 1024ull * 1024ull * 1024ull;
+        }
+    }
+    if (number.empty()) {
+        return false;
+    }
+
+    std::size_t parsed = 0;
+    try {
+        std::size_t pos = 0;
+        parsed = std::stoull(number, &pos, 10);
+        if (pos != number.size()) {
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    if (parsed == 0) {
+        return false;
+    }
+    *value = parsed * multiplier;
+    return true;
+}
+
+bool ParseArgs(int argc, char const* argv[], Options* options)
+{
+    if (options == nullptr) {
+        return false;
+    }
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            PrintUsage(argv[0]);
+            options->showHelp = true;
+            return false;
+        }
+        if (arg == "-s") {
+            if (i + 1 >= argc || !ParseSize(argv[++i], &options->ioSize)) {
+                std::cerr << "Invalid value for -s.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
+        if (arg == "-n") {
+            if (i + 1 >= argc || !ParseSize(argv[++i], &options->bufferCount)) {
+                std::cerr << "Invalid value for -n.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
+
+        std::cerr << "Unknown option: " << arg << "\n";
+        PrintUsage(argv[0]);
+        return false;
+    }
+    return true;
+}
+
 struct CopyBuffers {
     std::vector<void*> hostSrc;
-    std::vector<void*> hostDst;
     std::vector<void*> device;
 };
 
@@ -73,9 +174,9 @@ struct Timing {
 
 void PrintTableHeader()
 {
-    std::cout << "AscendCL aclrtMemcpyAsync H2D/D2H benchmark\n"
+    std::cout << "AscendCL aclrtMemcpyAsync H2D benchmark\n"
               << "warmup=" << kWarmupIterations << ", iterations=" << kMeasureIterations
-              << ", buffers_per_iteration=" << kBufferCount << ", device=" << kDeviceId
+              << ", device=" << kDeviceId
               << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
@@ -194,18 +295,14 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
     return ok;
 }
 
-bool AllocateBuffers(std::size_t size, CopyBuffers* buffers)
+bool AllocateBuffers(std::size_t size, std::size_t bufferCount, CopyBuffers* buffers)
 {
-    buffers->hostSrc.assign(kBufferCount, nullptr);
-    buffers->hostDst.assign(kBufferCount, nullptr);
-    buffers->device.assign(kBufferCount, nullptr);
+    buffers->hostSrc.assign(bufferCount, nullptr);
+    buffers->device.assign(bufferCount, nullptr);
 
-    for (std::size_t i = 0; i < kBufferCount; ++i) {
+    for (std::size_t i = 0; i < bufferCount; ++i) {
         // aclrtMallocHost allocates page-locked host memory suitable for DMA transfers.
         if (!CHECK_ACL(aclrtMallocHost(&buffers->hostSrc[i], size))) {
-            return false;
-        }
-        if (!CHECK_ACL(aclrtMallocHost(&buffers->hostDst[i], size))) {
             return false;
         }
 
@@ -215,7 +312,6 @@ bool AllocateBuffers(std::size_t size, CopyBuffers* buffers)
         }
 
         FillHostData(buffers->hostSrc[i], size);
-        std::memset(buffers->hostDst[i], 0, size);
     }
     return true;
 }
@@ -232,15 +328,6 @@ bool FreeBuffers(CopyBuffers* buffers)
             }
         }
     }
-    for (void* ptr : buffers->hostDst) {
-        if (ptr != nullptr) {
-            aclError ret = aclrtFreeHost(ptr);
-            if (ret != ACL_SUCCESS) {
-                std::cerr << "aclrtFreeHost(hostDst) failed, error code: " << ret << "\n";
-                ok = false;
-            }
-        }
-    }
     for (void* ptr : buffers->hostSrc) {
         if (ptr != nullptr) {
             aclError ret = aclrtFreeHost(ptr);
@@ -253,23 +340,17 @@ bool FreeBuffers(CopyBuffers* buffers)
     return ok;
 }
 
-bool RunSize(std::size_t size, aclrtStream stream)
+bool RunSize(std::size_t size, std::size_t bufferCount, aclrtStream stream)
 {
     CopyBuffers buffers;
     bool ok = true;
-    ok = AllocateBuffers(size, &buffers);
+    ok = AllocateBuffers(size, bufferCount, &buffers);
 
     // H2D: dst is device memory, destMax is device buffer size, src is host memory,
     // count is the bytes to copy, kind selects Host-to-Device, stream carries the async work.
     if (ok) {
         ok = RunOneDirection("H2D", buffers.device, buffers.hostSrc, size,
-                             ACL_MEMCPY_HOST_TO_DEVICE, stream);
-    }
-
-    if (ok) {
-        // D2H reads back from the same device buffer into host memory.
-        ok = RunOneDirection("D2H", buffers.hostDst, buffers.device, size,
-                             ACL_MEMCPY_DEVICE_TO_HOST, stream);
+                              ACL_MEMCPY_HOST_TO_DEVICE, stream);
     }
 
     // aclrtFree releases device memory; aclrtFreeHost releases host memory.
@@ -280,8 +361,13 @@ bool RunSize(std::size_t size, aclrtStream stream)
 
 }  // namespace
 
-int main()
+int main(int argc, char const* argv[])
 {
+    Options options;
+    if (!ParseArgs(argc, argv, &options)) {
+        return options.showHelp ? 0 : 1;
+    }
+
     // aclInit initializes AscendCL runtime state for this process.
     if (!CHECK_ACL(aclInit(nullptr))) {
         std::cerr << "aclInit failed. Check that Ascend runtime is installed and configured.\n";
@@ -306,18 +392,9 @@ int main()
     }
 
     if (ok) {
-        const std::vector<std::size_t> sizes = {
-            4 * 1024,       8 * 1024,       16 * 1024,      32 * 1024,
-            64 * 1024,      128 * 1024,     256 * 1024,     512 * 1024,
-            1024 * 1024,    4 * 1024 * 1024, 16 * 1024 * 1024,
-        };
-
         PrintTableHeader();
-        for (std::size_t size : sizes) {
-            if (!RunSize(size, stream)) {
-                ok = false;
-                break;
-            }
+        if (!RunSize(options.ioSize, options.bufferCount, stream)) {
+            ok = false;
         }
     }
 
