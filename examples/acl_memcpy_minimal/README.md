@@ -54,15 +54,13 @@ directly and does not create unaligned offsets.
 The output columns are:
 
 ```text
-Dir          Size   Count    Submit(us)   HostTotal(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
+Dir          Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
 ```
 
 - `Size`: bytes per buffer, printed in a human-readable unit.
 - `Count`: number of buffers copied per measurement iteration.
 - `Submit(us)`: average CPU-side time spent submitting the batch of
   `aclrtMemcpyAsync` calls.
-- `HostTotal(us)`: average host-side wall time from recording the start event
-  through `aclrtSynchronizeStream` returning.
 - `Copy(us)`: average stream-side copy time measured by `aclrtRecordEvent` and
   `aclrtEventElapsedTime`, matching the style used by the main benchmark.
 - `Submit/IO(us)`: `Submit(us) / Count`.
@@ -111,14 +109,14 @@ Example output:
 AscendCL aclrtMemcpyAsync single-device H2D benchmark
 warmup=5, iterations=128, buffers_per_iteration=1024
 
-Dir             Size   Count    Submit(us)   HostTotal(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
-------------------------------------------------------------------------------------------------------------------------------------
-H2D            64 KB    1024       160.200        2020.000      1839.800      2000.000           0.156         1.953        32000.00
+Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
+--------------------------------------------------------------------------------------------------------------------
+H2D            64 KB    1024       160.200      1839.800      2000.000           0.156         1.953        32000.00
 
 AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark
 warmup=5, iterations=128, buffers_per_iteration=1024
 
-Dir             Size   Count    Submit(us)   HostTotal(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
-------------------------------------------------------------------------------------------------------------------------------------
-H2D_ALL8       64 KB    8192      1200.000        4100.000      2800.000      4000.000           0.146         0.488       128000.00
+Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
+--------------------------------------------------------------------------------------------------------------------
+H2D_ALL8       64 KB    8192      1200.000      2800.000      4000.000           0.146         0.488       128000.00
 ```

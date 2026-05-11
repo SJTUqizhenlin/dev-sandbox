@@ -188,14 +188,12 @@ struct CopyBuffers {
 
 struct Timing {
     double submitUs = 0.0;
-    double hostTotalUs = 0.0;
     double copyUs = 0.0;
 };
 
 struct DeviceTimings {
     bool ok = false;
     std::vector<double> submitUs;
-    std::vector<double> hostTotalUs;
     std::vector<double> copyUs;
 };
 
@@ -241,26 +239,24 @@ void PrintTableHeader(const std::string& title, const Options& options)
               << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
-              << std::setw(8) << "Count" << std::setw(14) << "Submit(us)" << std::setw(16)
-              << "HostTotal(us)" << std::setw(14) << "Wait(us)" << std::setw(14)
-              << "Copy(us)" << std::setw(16) << "Submit/IO(us)" << std::setw(14)
-              << "Copy/IO(us)" << std::setw(16) << "BW(MB/s)" << "\n";
-    std::cout << std::string(132, '-') << "\n";
+              << std::setw(8) << "Count" << std::setw(14) << "Submit(us)" << std::setw(14)
+              << "Wait(us)" << std::setw(14) << "Copy(us)" << std::setw(16)
+              << "Submit/IO(us)" << std::setw(14) << "Copy/IO(us)" << std::setw(16)
+              << "BW(MB/s)" << "\n";
+    std::cout << std::string(116, '-') << "\n";
 }
 
 void PrintTableRow(const std::string& direction, std::size_t bytes, std::size_t count,
-                   double avgSubmitUs, double avgHostTotalUs, double avgWaitUs,
-                   double avgCopyUs)
+                   double avgSubmitUs, double avgWaitUs, double avgCopyUs)
 {
     const auto countAsDouble = static_cast<double>(count);
     const auto submitPerIoUs = avgSubmitUs / countAsDouble;
     const auto copyPerIoUs = avgCopyUs / countAsDouble;
     std::cout << std::left << std::setw(8) << direction << std::right << std::setw(12)
               << SizeLabel(bytes) << std::setw(8) << count << std::fixed << std::setprecision(3)
-              << std::setw(14) << avgSubmitUs << std::setw(16) << avgHostTotalUs
-              << std::setw(14) << avgWaitUs << std::setw(14) << avgCopyUs
-              << std::setw(16) << submitPerIoUs << std::setw(14) << copyPerIoUs
-              << std::setprecision(2) << std::setw(16)
+              << std::setw(14) << avgSubmitUs << std::setw(14) << avgWaitUs
+              << std::setw(14) << avgCopyUs << std::setw(16) << submitPerIoUs
+              << std::setw(14) << copyPerIoUs << std::setprecision(2) << std::setw(16)
               << BandwidthMBps(bytes * count, avgCopyUs) << "\n";
 }
 
@@ -277,7 +273,6 @@ bool MeasureCopyOnce(const std::vector<void*>& dst, const std::vector<void*>& sr
                      aclrtEvent end, Timing* timing)
 {
     // The original benchmark records events around a batch of async copies.
-    auto hostTotalBegin = std::chrono::steady_clock::now();
     if (!CHECK_ACL(aclrtRecordEvent(start, stream))) {
         return false;
     }
@@ -298,14 +293,12 @@ bool MeasureCopyOnce(const std::vector<void*>& dst, const std::vector<void*>& sr
     if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
         return false;
     }
-    auto hostTotalEnd = std::chrono::steady_clock::now();
 
     float copyMs = 0.0f;
     if (!CHECK_ACL(aclrtEventElapsedTime(&copyMs, start, end))) {
         return false;
     }
     timing->submitUs = ElapsedUs(submitBegin, submitEnd);
-    timing->hostTotalUs = ElapsedUs(hostTotalBegin, hostTotalEnd);
     timing->copyUs = static_cast<double>(copyMs) * 1000.0;
     return true;
 }
@@ -334,7 +327,6 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
     }
 
     double submitUs = 0.0;
-    double hostTotalUs = 0.0;
     double copyUs = 0.0;
     if (ok) {
         for (std::size_t i = 0; i < iterations; ++i) {
@@ -344,7 +336,6 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
                 break;
             }
             submitUs += timing.submitUs;
-            hostTotalUs += timing.hostTotalUs;
             copyUs += timing.copyUs;
         }
     }
@@ -361,12 +352,10 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
     }
 
     const double avgSubmitUs = submitUs / static_cast<double>(iterations);
-    const double avgHostTotalUs = hostTotalUs / static_cast<double>(iterations);
     const double avgCopyUs = copyUs / static_cast<double>(iterations);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableRow(direction, size, src.size(), avgSubmitUs, avgHostTotalUs, avgWaitUs,
-                  avgCopyUs);
+    PrintTableRow(direction, size, src.size(), avgSubmitUs, avgWaitUs, avgCopyUs);
     return ok;
 }
 
@@ -501,7 +490,6 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
     }
 
     result->submitUs.assign(options.iterations, 0.0);
-    result->hostTotalUs.assign(options.iterations, 0.0);
     result->copyUs.assign(options.iterations, 0.0);
     for (std::size_t i = 0; i < options.iterations; ++i) {
         beginBarrier->Wait();
@@ -510,7 +498,6 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
             ok = MeasureCopyOnce(buffers.device, buffers.hostSrc, options.ioSize,
                                  ACL_MEMCPY_HOST_TO_DEVICE, stream, start, end, &timing);
             result->submitUs[i] = timing.submitUs;
-            result->hostTotalUs[i] = timing.hostTotalUs;
             result->copyUs[i] = timing.copyUs;
         }
         endBarrier->Wait();
@@ -561,25 +548,21 @@ bool RunAllDevices(const Options& options)
     }
 
     std::vector<double> maxSubmitUs(options.iterations, 0.0);
-    std::vector<double> maxHostTotalUs(options.iterations, 0.0);
     std::vector<double> maxCopyUs(options.iterations, 0.0);
     for (std::size_t iter = 0; iter < options.iterations; ++iter) {
         for (const auto& result : results) {
             maxSubmitUs[iter] = std::max(maxSubmitUs[iter], result.submitUs[iter]);
-            maxHostTotalUs[iter] =
-                std::max(maxHostTotalUs[iter], result.hostTotalUs[iter]);
             maxCopyUs[iter] = std::max(maxCopyUs[iter], result.copyUs[iter]);
         }
     }
 
     const double avgSubmitUs = Average(maxSubmitUs);
-    const double avgHostTotalUs = Average(maxHostTotalUs);
     const double avgCopyUs = Average(maxCopyUs);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
     PrintTableHeader("AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark", options);
     PrintTableRow("H2D_ALL8", options.ioSize, options.bufferCount * kAllDeviceCount,
-                  avgSubmitUs, avgHostTotalUs, avgWaitUs, avgCopyUs);
+                  avgSubmitUs, avgWaitUs, avgCopyUs);
     return true;
 }
 
