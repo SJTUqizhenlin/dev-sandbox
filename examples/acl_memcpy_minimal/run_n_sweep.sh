@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="${BIN:-${SCRIPT_DIR}/h2d_d2h_async_memcpy}"
+
+IO_SIZE="${IO_SIZE:-64K}"
+ITERS="${ITERS:-128}"
+LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs/n-sweep-$(date +%Y%m%d-%H%M%S)}"
+
+if [[ ! -x "${BIN}" ]]; then
+    echo "[error] executable not found: ${BIN}" >&2
+    echo "[error] build h2d_d2h_async_memcpy first, or set BIN=/path/to/binary." >&2
+    exit 1
+fi
+
+mkdir -p "${LOG_DIR}"
+
+echo "[sweep] bin=${BIN}"
+echo "[sweep] io_size=${IO_SIZE}, iterations=${ITERS}"
+echo "[sweep] logs=${LOG_DIR}"
+
+for n in 1K 3K 5K 7K 9K 11K 13K 15K; do
+    log_file="${LOG_DIR}/n-${n}.log"
+    echo
+    echo "[run] -s ${IO_SIZE} -n ${n} -i ${ITERS}"
+    "${BIN}" -s "${IO_SIZE}" -n "${n}" -i "${ITERS}" 2>&1 | tee "${log_file}"
+done
+
+echo
+echo "[done] logs saved in ${LOG_DIR}"
