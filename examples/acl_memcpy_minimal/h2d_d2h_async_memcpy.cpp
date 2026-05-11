@@ -19,6 +19,7 @@ namespace {
 
 constexpr int kDeviceId = 0;
 constexpr int kAllDeviceCount = 8;
+constexpr std::size_t kMultiStreamCount = 48;
 constexpr int kWarmupIterations = 5;
 constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
@@ -82,7 +83,7 @@ std::string SizeLabel(std::size_t bytes)
 void PrintUsage(const char* prog)
 {
     std::cout << "Usage: " << (prog != nullptr ? prog : "h2d_async_memcpy")
-              << " [-s <io_size>] [-n <buffer_count>]\n"
+              << " [-s <io_size>] [-n <buffer_count>] [-i <iterations>]\n"
               << "\n"
               << "Options:\n"
               << "  -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported."
@@ -195,6 +196,13 @@ struct DeviceTimings {
     bool ok = false;
     std::vector<double> submitUs;
     std::vector<double> copyUs;
+};
+
+struct StreamTask {
+    aclrtStream stream = nullptr;
+    aclrtEvent finish = nullptr;
+    std::vector<void*> src;
+    std::vector<void*> dst;
 };
 
 class Barrier {
@@ -425,6 +433,192 @@ bool RunSize(const Options& options, aclrtStream stream)
     return ok;
 }
 
+bool BuildStreamTasks(const CopyBuffers& buffers, std::size_t streamCount,
+                      std::vector<StreamTask>* tasks)
+{
+    if (tasks == nullptr) {
+        return false;
+    }
+    tasks->clear();
+    const std::size_t bufferCount = buffers.hostSrc.size();
+    const std::size_t activeStreams = std::min(streamCount, bufferCount);
+    if (activeStreams == 0) {
+        return false;
+    }
+
+    tasks->reserve(activeStreams);
+    const std::size_t base = bufferCount / activeStreams;
+    const std::size_t remainder = bufferCount % activeStreams;
+    std::size_t offset = 0;
+    for (std::size_t s = 0; s < activeStreams; ++s) {
+        const std::size_t count = base + (s < remainder ? 1 : 0);
+        StreamTask task;
+        if (!CHECK_ACL(aclrtCreateStream(&task.stream))) {
+            return false;
+        }
+        if (!CHECK_ACL(aclrtCreateEvent(&task.finish))) {
+            aclrtDestroyStream(task.stream);
+            return false;
+        }
+        task.src.reserve(count);
+        task.dst.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            task.src.push_back(buffers.hostSrc[offset + i]);
+            task.dst.push_back(buffers.device[offset + i]);
+        }
+        offset += count;
+        tasks->push_back(std::move(task));
+    }
+    return true;
+}
+
+bool DestroyStreamTasks(std::vector<StreamTask>* tasks)
+{
+    if (tasks == nullptr) {
+        return false;
+    }
+    bool ok = true;
+    for (auto& task : *tasks) {
+        if (task.finish != nullptr) {
+            ok = CHECK_ACL(aclrtDestroyEvent(task.finish)) && ok;
+            task.finish = nullptr;
+        }
+        if (task.stream != nullptr) {
+            ok = CHECK_ACL(aclrtDestroyStream(task.stream)) && ok;
+            task.stream = nullptr;
+        }
+    }
+    tasks->clear();
+    return ok;
+}
+
+bool MeasureMultiStreamCopyOnce(std::vector<StreamTask>& tasks, std::size_t size,
+                                aclrtEvent start, aclrtEvent end, Timing* timing)
+{
+    if (tasks.empty() || timing == nullptr) {
+        return false;
+    }
+
+    if (!CHECK_ACL(aclrtRecordEvent(start, tasks[0].stream))) {
+        return false;
+    }
+    for (std::size_t i = 1; i < tasks.size(); ++i) {
+        if (!CHECK_ACL(aclrtStreamWaitEvent(tasks[i].stream, start))) {
+            return false;
+        }
+    }
+
+    auto submitBegin = std::chrono::steady_clock::now();
+    for (auto& task : tasks) {
+        for (std::size_t i = 0; i < task.src.size(); ++i) {
+            if (!CHECK_ACL(aclrtMemcpyAsync(task.dst[i], size, task.src[i], size,
+                                            ACL_MEMCPY_HOST_TO_DEVICE, task.stream))) {
+                return false;
+            }
+        }
+    }
+    auto submitEnd = std::chrono::steady_clock::now();
+
+    for (std::size_t i = 1; i < tasks.size(); ++i) {
+        if (!CHECK_ACL(aclrtRecordEvent(tasks[i].finish, tasks[i].stream))) {
+            return false;
+        }
+        if (!CHECK_ACL(aclrtStreamWaitEvent(tasks[0].stream, tasks[i].finish))) {
+            return false;
+        }
+    }
+
+    if (!CHECK_ACL(aclrtRecordEvent(end, tasks[0].stream))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtSynchronizeStream(tasks[0].stream))) {
+        return false;
+    }
+
+    float copyMs = 0.0f;
+    if (!CHECK_ACL(aclrtEventElapsedTime(&copyMs, start, end))) {
+        return false;
+    }
+    timing->submitUs = ElapsedUs(submitBegin, submitEnd);
+    timing->copyUs = static_cast<double>(copyMs) * 1000.0;
+    return true;
+}
+
+bool RunMultiStreamDirection(const Options& options, CopyBuffers* buffers)
+{
+    if (buffers == nullptr) {
+        return false;
+    }
+
+    aclrtEvent start = nullptr;
+    aclrtEvent end = nullptr;
+    std::vector<StreamTask> tasks;
+    bool ok = true;
+
+    ok = BuildStreamTasks(*buffers, kMultiStreamCount, &tasks);
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&start));
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&end));
+    }
+
+    for (int i = 0; ok && i < kWarmupIterations; ++i) {
+        Timing timing;
+        ok = MeasureMultiStreamCopyOnce(tasks, options.ioSize, start, end, &timing);
+    }
+
+    double submitUs = 0.0;
+    double copyUs = 0.0;
+    for (std::size_t i = 0; ok && i < options.iterations; ++i) {
+        Timing timing;
+        ok = MeasureMultiStreamCopyOnce(tasks, options.ioSize, start, end, &timing);
+        if (ok) {
+            submitUs += timing.submitUs;
+            copyUs += timing.copyUs;
+        }
+    }
+
+    if (start != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
+    }
+    if (end != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
+    }
+    ok = DestroyStreamTasks(&tasks) && ok;
+
+    if (!ok) {
+        return false;
+    }
+
+    const double avgSubmitUs = submitUs / static_cast<double>(options.iterations);
+    const double avgCopyUs = copyUs / static_cast<double>(options.iterations);
+    const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
+    PrintTableRow("H2D_MS48", options.ioSize, options.bufferCount, avgSubmitUs, avgWaitUs,
+                  avgCopyUs);
+    return true;
+}
+
+bool RunSingleDeviceMultiStream(const Options& options)
+{
+    bool ok = true;
+    CopyBuffers buffers;
+
+    if (!CHECK_ACL(aclrtSetDevice(kDeviceId))) {
+        std::cerr << "aclrtSetDevice(" << kDeviceId << ") failed.\n";
+        return false;
+    }
+
+    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device 48-stream H2D benchmark",
+                     options);
+    ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
+    if (ok) {
+        ok = RunMultiStreamDirection(options, &buffers);
+    }
+    ok = FreeBuffers(&buffers) && ok;
+    return ok;
+}
+
 bool RunSingleDevice(const Options& options)
 {
     bool ok = true;
@@ -586,6 +780,10 @@ int main(int argc, char const* argv[])
     // aclrtSetDevice selects which Ascend device subsequent runtime calls use.
     if (ok) {
         ok = RunSingleDevice(options);
+    }
+
+    if (ok) {
+        ok = RunSingleDeviceMultiStream(options);
     }
 
     if (ok) {
