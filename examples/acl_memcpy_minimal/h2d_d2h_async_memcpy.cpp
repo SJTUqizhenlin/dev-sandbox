@@ -1,18 +1,24 @@
 #include <acl/acl.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 
 constexpr int kDeviceId = 0;
+constexpr int kAllDeviceCount = 8;
 constexpr int kWarmupIterations = 5;
 constexpr int kMeasureIterations = 50;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
@@ -172,11 +178,51 @@ struct Timing {
     double copyUs = 0.0;
 };
 
-void PrintTableHeader()
+struct DeviceTimings {
+    bool ok = false;
+    std::vector<double> submitUs;
+    std::vector<double> copyUs;
+};
+
+class Barrier {
+public:
+    explicit Barrier(int count) : threshold_(count), count_(count) {}
+
+    void Wait()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const int generation = generation_;
+        if (--count_ == 0) {
+            generation_++;
+            count_ = threshold_;
+            cv_.notify_all();
+            return;
+        }
+        cv_.wait(lock, [&] { return generation != generation_; });
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    int threshold_;
+    int count_;
+    int generation_ = 0;
+};
+
+double Average(const std::vector<double>& values)
 {
-    std::cout << "AscendCL aclrtMemcpyAsync H2D benchmark\n"
+    double sum = 0.0;
+    for (double value : values) {
+        sum += value;
+    }
+    return values.empty() ? 0.0 : sum / static_cast<double>(values.size());
+}
+
+void PrintTableHeader(const std::string& title, std::size_t bufferCount)
+{
+    std::cout << title << "\n"
               << "warmup=" << kWarmupIterations << ", iterations=" << kMeasureIterations
-              << ", device=" << kDeviceId
+              << ", buffers_per_iteration=" << bufferCount
               << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
@@ -359,6 +405,149 @@ bool RunSize(std::size_t size, std::size_t bufferCount, aclrtStream stream)
     return ok;
 }
 
+bool RunSingleDevice(const Options& options)
+{
+    bool ok = true;
+    aclrtStream stream = nullptr;
+
+    if (!CHECK_ACL(aclrtSetDevice(kDeviceId))) {
+        std::cerr << "aclrtSetDevice(" << kDeviceId << ") failed.\n";
+        return false;
+    }
+    if (!CHECK_ACL(aclrtCreateStream(&stream))) {
+        std::cerr << "aclrtCreateStream failed.\n";
+        return false;
+    }
+
+    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device H2D benchmark",
+                     options.bufferCount);
+    ok = RunSize(options.ioSize, options.bufferCount, stream);
+
+    if (stream != nullptr) {
+        aclError ret = aclrtDestroyStream(stream);
+        if (ret != ACL_SUCCESS) {
+            std::cerr << "aclrtDestroyStream failed, error code: " << ret << "\n";
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarrier,
+                        Barrier* endBarrier, DeviceTimings* result)
+{
+    if (beginBarrier == nullptr || endBarrier == nullptr || result == nullptr) {
+        return;
+    }
+
+    bool ok = true;
+    aclrtStream stream = nullptr;
+    aclrtEvent start = nullptr;
+    aclrtEvent end = nullptr;
+    CopyBuffers buffers;
+
+    ok = CHECK_ACL(aclrtSetDevice(deviceId));
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateStream(&stream));
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&start));
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&end));
+    }
+    if (ok) {
+        ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
+    }
+
+    for (int i = 0; i < kWarmupIterations; ++i) {
+        beginBarrier->Wait();
+        if (ok) {
+            Timing timing;
+            ok = MeasureCopyOnce(buffers.device, buffers.hostSrc, options.ioSize,
+                                 ACL_MEMCPY_HOST_TO_DEVICE, stream, start, end, &timing);
+        }
+        endBarrier->Wait();
+    }
+
+    result->submitUs.assign(kMeasureIterations, 0.0);
+    result->copyUs.assign(kMeasureIterations, 0.0);
+    for (int i = 0; i < kMeasureIterations; ++i) {
+        beginBarrier->Wait();
+        if (ok) {
+            Timing timing;
+            ok = MeasureCopyOnce(buffers.device, buffers.hostSrc, options.ioSize,
+                                 ACL_MEMCPY_HOST_TO_DEVICE, stream, start, end, &timing);
+            result->submitUs[i] = timing.submitUs;
+            result->copyUs[i] = timing.copyUs;
+        }
+        endBarrier->Wait();
+    }
+
+    if (ok) {
+        result->ok = true;
+    }
+
+    ok = FreeBuffers(&buffers) && ok;
+    if (end != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
+    }
+    if (start != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
+    }
+    if (stream != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
+    }
+    result->ok = result->ok && ok;
+}
+
+bool RunAllDevices(const Options& options)
+{
+    Barrier beginBarrier(kAllDeviceCount);
+    Barrier endBarrier(kAllDeviceCount);
+    std::vector<DeviceTimings> results(kAllDeviceCount);
+    std::vector<std::thread> threads;
+    threads.reserve(kAllDeviceCount);
+
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        threads.emplace_back(RunAllDeviceWorker, device, std::cref(options), &beginBarrier,
+                             &endBarrier, &results[device]);
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    bool ok = true;
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        if (!results[device].ok) {
+            std::cerr << "device " << device << " failed during all-device H2D test.\n";
+            ok = false;
+        }
+    }
+    if (!ok) {
+        return false;
+    }
+
+    std::vector<double> maxSubmitUs(kMeasureIterations, 0.0);
+    std::vector<double> maxCopyUs(kMeasureIterations, 0.0);
+    for (int iter = 0; iter < kMeasureIterations; ++iter) {
+        for (const auto& result : results) {
+            maxSubmitUs[iter] = std::max(maxSubmitUs[iter], result.submitUs[iter]);
+            maxCopyUs[iter] = std::max(maxCopyUs[iter], result.copyUs[iter]);
+        }
+    }
+
+    const double avgSubmitUs = Average(maxSubmitUs);
+    const double avgCopyUs = Average(maxCopyUs);
+    const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
+
+    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark",
+                     options.bufferCount);
+    PrintTableRow("H2D_ALL8", options.ioSize, options.bufferCount * kAllDeviceCount,
+                  avgSubmitUs, avgWaitUs, avgCopyUs);
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char const* argv[])
@@ -375,40 +564,22 @@ int main(int argc, char const* argv[])
     }
 
     bool ok = true;
-    aclrtStream stream = nullptr;
 
     // aclrtSetDevice selects which Ascend device subsequent runtime calls use.
-    if (!CHECK_ACL(aclrtSetDevice(kDeviceId))) {
-        std::cerr << "aclrtSetDevice(" << kDeviceId << ") failed.\n";
-        ok = false;
+    if (ok) {
+        ok = RunSingleDevice(options);
     }
 
     if (ok) {
-        // aclrtCreateStream creates an asynchronous execution queue for memcpy operations.
-        if (!CHECK_ACL(aclrtCreateStream(&stream))) {
-            std::cerr << "aclrtCreateStream failed.\n";
-            ok = false;
-        }
+        ok = RunAllDevices(options);
     }
 
-    if (ok) {
-        PrintTableHeader();
-        if (!RunSize(options.ioSize, options.bufferCount, stream)) {
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        if (CHECK_ACL(aclrtSetDevice(device))) {
+            ok = CHECK_ACL(aclrtResetDevice(device)) && ok;
+        } else {
             ok = false;
         }
-    }
-
-    if (stream != nullptr) {
-        aclError ret = aclrtDestroyStream(stream);
-        if (ret != ACL_SUCCESS) {
-            std::cerr << "aclrtDestroyStream failed, error code: " << ret << "\n";
-            ok = false;
-        }
-    }
-
-    aclError resetRet = aclrtResetDevice(kDeviceId);
-    if (!CHECK_ACL(resetRet)) {
-        ok = false;
     }
 
     aclError finalizeRet = aclFinalize();

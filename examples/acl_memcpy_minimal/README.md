@@ -5,9 +5,14 @@ This demo is a small, standalone example for learning the basic AscendCL
 into the repository CMake build.
 
 The program measures asynchronous Host-to-Device (H2D) copies for one requested
-buffer size and buffer count. For each measurement iteration, it submits a batch
-of async copies to one stream and then synchronizes once. This keeps the demo
-close to the main project's simple CE benchmark while still being easy to read.
+buffer size and buffer count. It first runs a single-device test on device 0,
+then runs an 8-device simultaneous test where each device reads from its own host
+buffer into its own device buffer.
+
+For each measurement iteration, every device submits a batch of async copies to
+one stream and then synchronizes once. The 8-device test uses one host thread per
+device and a CPU barrier to align each iteration, avoiding cross-device event
+dependencies in the benchmark code.
 
 ## What It Shows
 
@@ -91,15 +96,23 @@ Options:
 -n <buffer_count>  Number of buffers copied per measurement iteration.
 ```
 
-The device is fixed to device 0 in this minimal demo.
+The single-device test is fixed to device 0.
+The 8-device test uses devices 0 through 7.
 
 Example output:
 
 ```text
-AscendCL aclrtMemcpyAsync H2D benchmark
-warmup=5, iterations=50, device=0
+AscendCL aclrtMemcpyAsync single-device H2D benchmark
+warmup=5, iterations=50, buffers_per_iteration=1024
 
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
 --------------------------------------------------------------------------------------
 H2D            64 KB    1024       160.200      1839.800      2000.000        32000.00
+
+AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark
+warmup=5, iterations=50, buffers_per_iteration=1024
+
+Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
+--------------------------------------------------------------------------------------
+H2D_ALL8       64 KB    8192      1200.000      2800.000      4000.000       128000.00
 ```
