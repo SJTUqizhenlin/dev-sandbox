@@ -5,10 +5,10 @@ This demo is a small, standalone example for learning the basic AscendCL
 into the repository CMake build.
 
 The program measures asynchronous Host-to-Device (H2D) copies for one requested
-buffer size and buffer count. Each run includes three tests: a single-device
-single-stream test on device 0, a single-device 48-stream test on device 0, and
-an 8-device simultaneous test where each device reads from its own host buffer
-into its own device buffer.
+buffer size and buffer count. Use `-t` to choose one test type: a single-device
+single-stream test on device 0, a single-device 48-stream test on device 0, an
+8-device simultaneous test where each device reads from its own host buffer into
+its own device buffer, or `all` to run all of them.
 
 For each single-stream measurement iteration, the test submits a batch of async
 copies to one stream and then synchronizes once. The 48-stream test splits the
@@ -99,22 +99,41 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRAR
 ## Run
 
 ```bash
-./h2d_d2h_async_memcpy -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t single_stream -s 64K -n 1024 -i 128
 ```
 
 Options:
 
 ```text
+-t <test_type>     Test to run. Default: all.
+                   all, single_stream, multi_stream, all8_single_stream
 -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
 -n <buffer_count>  Number of buffers copied per measurement iteration.
 -i <iterations>    Number of measured iterations. Default: 128.
+```
+
+Useful test aliases:
+
+```text
+single, ss                  -> single_stream
+multi, ms, ms48             -> multi_stream
+all8, multi_device          -> all8_single_stream
 ```
 
 The single-device test is fixed to device 0.
 The multi-stream single-device test is also fixed to device 0 and uses up to 48
 streams. The 8-device test uses devices 0 through 7.
 
-Example output:
+Examples:
+
+```bash
+./h2d_d2h_async_memcpy -t single_stream -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t multi_stream -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t all8_single_stream -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t all -s 64K -n 1024 -i 128
+```
+
+Example output with `-t all`:
 
 ```text
 AscendCL aclrtMemcpyAsync single-device H2D benchmark

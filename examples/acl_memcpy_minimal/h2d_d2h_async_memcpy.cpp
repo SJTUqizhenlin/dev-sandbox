@@ -25,10 +25,18 @@ constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
 constexpr std::size_t kDefaultBufferCount = 1024;
 
+enum class TestType {
+    All,
+    SingleStream,
+    MultiStream,
+    All8SingleStream,
+};
+
 struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
     std::size_t iterations = kDefaultMeasureIterations;
+    TestType testType = TestType::All;
     bool showHelp = false;
 };
 
@@ -80,12 +88,68 @@ std::string SizeLabel(std::size_t bytes)
     return std::to_string(bytes) + " B";
 }
 
+std::string NormalizeName(std::string text)
+{
+    for (char& ch : text) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (ch == '-') {
+            ch = '_';
+        }
+    }
+    return text;
+}
+
+const char* TestTypeName(TestType type)
+{
+    switch (type) {
+        case TestType::All:
+            return "all";
+        case TestType::SingleStream:
+            return "single_stream";
+        case TestType::MultiStream:
+            return "multi_stream";
+        case TestType::All8SingleStream:
+            return "all8_single_stream";
+    }
+    return "unknown";
+}
+
+bool ParseTestType(const std::string& text, TestType* type)
+{
+    if (type == nullptr) {
+        return false;
+    }
+    const std::string name = NormalizeName(text);
+    if (name == "all") {
+        *type = TestType::All;
+        return true;
+    }
+    if (name == "single" || name == "single_stream" || name == "ss") {
+        *type = TestType::SingleStream;
+        return true;
+    }
+    if (name == "multi" || name == "multi_stream" || name == "multistream" ||
+        name == "ms" || name == "ms48") {
+        *type = TestType::MultiStream;
+        return true;
+    }
+    if (name == "all8" || name == "all8_single_stream" || name == "multi_device" ||
+        name == "multi_card" || name == "all_device" || name == "all_devices") {
+        *type = TestType::All8SingleStream;
+        return true;
+    }
+    return false;
+}
+
 void PrintUsage(const char* prog)
 {
     std::cout << "Usage: " << (prog != nullptr ? prog : "h2d_async_memcpy")
-              << " [-s <io_size>] [-n <buffer_count>] [-i <iterations>]\n"
+              << " [-t <test_type>] [-s <io_size>] [-n <buffer_count>] [-i <iterations>]\n"
               << "\n"
               << "Options:\n"
+              << "  -t <test_type>     Test to run. Default: " << TestTypeName(TestType::All)
+              << "\n"
+              << "                     all, single_stream, multi_stream, all8_single_stream\n"
               << "  -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported."
               << " Default: " << SizeLabel(kDefaultIoSize) << "\n"
               << "  -n <buffer_count>  Number of buffers per measurement iteration."
@@ -147,6 +211,14 @@ bool ParseArgs(int argc, char const* argv[], Options* options)
             PrintUsage(argv[0]);
             options->showHelp = true;
             return false;
+        }
+        if (arg == "-t") {
+            if (i + 1 >= argc || !ParseTestType(argv[++i], &options->testType)) {
+                std::cerr << "Invalid value for -t.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
         }
         if (arg == "-s") {
             if (i + 1 >= argc || !ParseSize(argv[++i], &options->ioSize)) {
@@ -760,6 +832,44 @@ bool RunAllDevices(const Options& options)
     return true;
 }
 
+struct TestCase {
+    TestType type;
+    const char* name;
+    bool (*run)(const Options&);
+};
+
+const std::vector<TestCase>& TestCases()
+{
+    static const std::vector<TestCase> cases = {
+        {TestType::SingleStream, "single_stream", RunSingleDevice},
+        {TestType::MultiStream, "multi_stream", RunSingleDeviceMultiStream},
+        {TestType::All8SingleStream, "all8_single_stream", RunAllDevices},
+    };
+    return cases;
+}
+
+bool RunSelectedTests(const Options& options)
+{
+    bool ok = true;
+    for (const auto& testCase : TestCases()) {
+        if (options.testType == TestType::All || options.testType == testCase.type) {
+            if (!testCase.run(options)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    return ok;
+}
+
+int DeviceResetCount(TestType type)
+{
+    if (type == TestType::All || type == TestType::All8SingleStream) {
+        return kAllDeviceCount;
+    }
+    return 1;
+}
+
 }  // namespace
 
 int main(int argc, char const* argv[])
@@ -777,20 +887,11 @@ int main(int argc, char const* argv[])
 
     bool ok = true;
 
-    // aclrtSetDevice selects which Ascend device subsequent runtime calls use.
     if (ok) {
-        ok = RunSingleDevice(options);
+        ok = RunSelectedTests(options);
     }
 
-    if (ok) {
-        ok = RunSingleDeviceMultiStream(options);
-    }
-
-    if (ok) {
-        ok = RunAllDevices(options);
-    }
-
-    for (int device = 0; device < kAllDeviceCount; ++device) {
+    for (int device = 0; device < DeviceResetCount(options.testType); ++device) {
         if (CHECK_ACL(aclrtSetDevice(device))) {
             ok = CHECK_ACL(aclrtResetDevice(device)) && ok;
         } else {

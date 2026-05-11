@@ -6,7 +6,8 @@ BIN="${BIN:-${SCRIPT_DIR}/h2d_d2h_async_memcpy}"
 
 IO_SIZE="${IO_SIZE:-64K}"
 ITERS="${ITERS:-128}"
-LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs/n-sweep-$(date +%Y%m%d-%H%M%S)}"
+TEST_TYPE="${TEST_TYPE:-single_stream}"
+LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs/n-sweep-${TEST_TYPE}-$(date +%Y%m%d-%H%M%S)}"
 
 if [[ ! -x "${BIN}" ]]; then
     echo "[error] executable not found: ${BIN}" >&2
@@ -17,14 +18,14 @@ fi
 mkdir -p "${LOG_DIR}"
 
 echo "[sweep] bin=${BIN}"
-echo "[sweep] io_size=${IO_SIZE}, iterations=${ITERS}"
+echo "[sweep] test_type=${TEST_TYPE}, io_size=${IO_SIZE}, iterations=${ITERS}"
 echo "[sweep] logs=${LOG_DIR}"
 
 for n in 1K 3K 5K 7K 9K 11K 13K 15K; do
     log_file="${LOG_DIR}/n-${n}.log"
     echo
-    echo "[run] -s ${IO_SIZE} -n ${n} -i ${ITERS}"
-    "${BIN}" -s "${IO_SIZE}" -n "${n}" -i "${ITERS}" 2>&1 | tee "${log_file}"
+    echo "[run] -t ${TEST_TYPE} -s ${IO_SIZE} -n ${n} -i ${ITERS}"
+    "${BIN}" -t "${TEST_TYPE}" -s "${IO_SIZE}" -n "${n}" -i "${ITERS}" 2>&1 | tee "${log_file}"
 done
 
 echo
