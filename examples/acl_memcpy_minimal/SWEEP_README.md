@@ -13,7 +13,7 @@ cd dev-sandbox/examples/acl_memcpy_minimal
 Default sweep:
 
 ```text
--n 1K, 3K, 5K, 7K, 9K, 11K, 13K, 15K
+-n 10, 50, 100, 300, 500, 1000, 2000, 3000, 5000, 7500, 10000
 ```
 
 Default fixed parameters:
@@ -28,6 +28,7 @@ Useful overrides:
 
 ```bash
 TEST_TYPE=multi_stream ./run_n_sweep.sh
+TEST_TYPE=batch ./run_n_sweep.sh
 TEST_TYPE=all8_single_stream ./run_n_sweep.sh
 IO_SIZE=32K ITERS=256 ./run_n_sweep.sh
 BIN=/path/to/h2d_d2h_async_memcpy ./run_n_sweep.sh
@@ -38,6 +39,7 @@ Supported `TEST_TYPE` values are:
 
 ```text
 single_stream
+batch
 multi_stream
 all8_single_stream
 all

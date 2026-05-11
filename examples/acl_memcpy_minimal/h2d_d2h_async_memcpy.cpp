@@ -28,6 +28,7 @@ constexpr std::size_t kDefaultBufferCount = 1024;
 enum class TestType {
     All,
     SingleStream,
+    Batch,
     MultiStream,
     All8SingleStream,
 };
@@ -36,7 +37,7 @@ struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
     std::size_t iterations = kDefaultMeasureIterations;
-    TestType testType = TestType::All;
+    TestType testType = TestType::SingleStream;
     bool showHelp = false;
 };
 
@@ -106,6 +107,8 @@ const char* TestTypeName(TestType type)
             return "all";
         case TestType::SingleStream:
             return "single_stream";
+        case TestType::Batch:
+            return "batch";
         case TestType::MultiStream:
             return "multi_stream";
         case TestType::All8SingleStream:
@@ -128,6 +131,10 @@ bool ParseTestType(const std::string& text, TestType* type)
         *type = TestType::SingleStream;
         return true;
     }
+    if (name == "batch" || name == "batch_stream" || name == "batch_async") {
+        *type = TestType::Batch;
+        return true;
+    }
     if (name == "multi" || name == "multi_stream" || name == "multistream" ||
         name == "ms" || name == "ms48") {
         *type = TestType::MultiStream;
@@ -147,9 +154,10 @@ void PrintUsage(const char* prog)
               << " [-t <test_type>] [-s <io_size>] [-n <buffer_count>] [-i <iterations>]\n"
               << "\n"
               << "Options:\n"
-              << "  -t <test_type>     Test to run. Default: " << TestTypeName(TestType::All)
-              << "\n"
-              << "                     all, single_stream, multi_stream, all8_single_stream\n"
+              << "  -t <test_type>     Test to run. Default: "
+              << TestTypeName(TestType::SingleStream) << "\n"
+              << "                     all, single_stream, batch, multi_stream,"
+              << " all8_single_stream\n"
               << "  -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported."
               << " Default: " << SizeLabel(kDefaultIoSize) << "\n"
               << "  -n <buffer_count>  Number of buffers per measurement iteration."
@@ -257,6 +265,13 @@ struct CopyBuffers {
     void* deviceBase = nullptr;
     std::vector<void*> hostSrc;
     std::vector<void*> device;
+};
+
+struct BatchCopyPlan {
+    std::vector<size_t> destMaxs;
+    std::vector<size_t> sizes;
+    std::vector<aclrtMemcpyBatchAttr> attrs;
+    std::vector<size_t> attrIndexes;
 };
 
 struct Timing {
@@ -502,6 +517,164 @@ bool RunSize(const Options& options, aclrtStream stream)
     // aclrtFree releases device memory; aclrtFreeHost releases host memory.
     ok = FreeBuffers(&buffers) && ok;
 
+    return ok;
+}
+
+BatchCopyPlan BuildBatchCopyPlan(std::size_t size, std::size_t bufferCount, int deviceId)
+{
+    BatchCopyPlan plan;
+    plan.destMaxs.assign(bufferCount, size);
+    plan.sizes.assign(bufferCount, size);
+
+    aclrtMemcpyBatchAttr attr;
+    std::memset(&attr, 0, sizeof(attr));
+    attr.srcLoc.type = ACL_MEM_LOCATION_TYPE_HOST;
+    attr.dstLoc.type = ACL_MEM_LOCATION_TYPE_DEVICE;
+    attr.dstLoc.id = deviceId;
+    plan.attrs.push_back(attr);
+
+    // One attribute entry applies to all batch items.
+    plan.attrIndexes.push_back(0);
+    return plan;
+}
+
+bool SubmitBatchCopy(const std::vector<void*>& dst, const std::vector<void*>& src,
+                     BatchCopyPlan* plan, aclrtStream stream)
+{
+    if (plan == nullptr) {
+        return false;
+    }
+
+    size_t failureIndex = static_cast<size_t>(-1);
+    aclError ret = aclrtMemcpyBatchAsync(const_cast<void**>(dst.data()), plan->destMaxs.data(),
+                                         const_cast<void**>(src.data()), plan->sizes.data(),
+                                         src.size(), plan->attrs.data(),
+                                         plan->attrIndexes.data(), plan->attrs.size(),
+                                         &failureIndex, stream);
+    if (ret != ACL_SUCCESS && failureIndex != static_cast<size_t>(-1)) {
+        std::cerr << "aclrtMemcpyBatchAsync failed at batch index " << failureIndex << ".\n";
+    }
+    return CHECK_ACL(ret);
+}
+
+bool MeasureBatchCopyOnce(const std::vector<void*>& dst, const std::vector<void*>& src,
+                          BatchCopyPlan* plan, aclrtStream stream, aclrtEvent start,
+                          aclrtEvent end, Timing* timing)
+{
+    if (timing == nullptr) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtRecordEvent(start, stream))) {
+        return false;
+    }
+
+    auto submitBegin = std::chrono::steady_clock::now();
+    if (!SubmitBatchCopy(dst, src, plan, stream)) {
+        return false;
+    }
+    auto submitEnd = std::chrono::steady_clock::now();
+
+    if (!CHECK_ACL(aclrtRecordEvent(end, stream))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
+        return false;
+    }
+
+    float copyMs = 0.0f;
+    if (!CHECK_ACL(aclrtEventElapsedTime(&copyMs, start, end))) {
+        return false;
+    }
+    timing->submitUs = ElapsedUs(submitBegin, submitEnd);
+    timing->copyUs = static_cast<double>(copyMs) * 1000.0;
+    return true;
+}
+
+bool RunBatchDirection(const Options& options, CopyBuffers* buffers, aclrtStream stream)
+{
+    if (buffers == nullptr) {
+        return false;
+    }
+
+    aclrtEvent start = nullptr;
+    aclrtEvent end = nullptr;
+    BatchCopyPlan plan = BuildBatchCopyPlan(options.ioSize, options.bufferCount, kDeviceId);
+
+    if (!CHECK_ACL(aclrtCreateEvent(&start))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtCreateEvent(&end))) {
+        aclrtDestroyEvent(start);
+        return false;
+    }
+
+    bool ok = true;
+    for (int i = 0; ok && i < kWarmupIterations; ++i) {
+        Timing timing;
+        ok = MeasureBatchCopyOnce(buffers->device, buffers->hostSrc, &plan, stream, start, end,
+                                  &timing);
+    }
+
+    double submitUs = 0.0;
+    double copyUs = 0.0;
+    for (std::size_t i = 0; ok && i < options.iterations; ++i) {
+        Timing timing;
+        ok = MeasureBatchCopyOnce(buffers->device, buffers->hostSrc, &plan, stream, start, end,
+                                  &timing);
+        if (ok) {
+            submitUs += timing.submitUs;
+            copyUs += timing.copyUs;
+        }
+    }
+
+    if (start != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
+    }
+    if (end != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
+    }
+
+    if (!ok) {
+        return false;
+    }
+
+    const double avgSubmitUs = submitUs / static_cast<double>(options.iterations);
+    const double avgCopyUs = copyUs / static_cast<double>(options.iterations);
+    const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
+    PrintTableRow("H2D_BATCH", options.ioSize, options.bufferCount, avgSubmitUs, avgWaitUs,
+                  avgCopyUs);
+    return true;
+}
+
+bool RunSingleDeviceBatch(const Options& options)
+{
+    bool ok = true;
+    aclrtStream stream = nullptr;
+    CopyBuffers buffers;
+
+    if (!CHECK_ACL(aclrtSetDevice(kDeviceId))) {
+        std::cerr << "aclrtSetDevice(" << kDeviceId << ") failed.\n";
+        return false;
+    }
+    if (!CHECK_ACL(aclrtCreateStream(&stream))) {
+        std::cerr << "aclrtCreateStream failed.\n";
+        return false;
+    }
+
+    PrintTableHeader("AscendCL aclrtMemcpyBatchAsync single-device H2D benchmark", options);
+    ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
+    if (ok) {
+        ok = RunBatchDirection(options, &buffers, stream);
+    }
+    ok = FreeBuffers(&buffers) && ok;
+
+    if (stream != nullptr) {
+        aclError ret = aclrtDestroyStream(stream);
+        if (ret != ACL_SUCCESS) {
+            std::cerr << "aclrtDestroyStream failed, error code: " << ret << "\n";
+            ok = false;
+        }
+    }
     return ok;
 }
 
@@ -842,6 +1015,7 @@ const std::vector<TestCase>& TestCases()
 {
     static const std::vector<TestCase> cases = {
         {TestType::SingleStream, "single_stream", RunSingleDevice},
+        {TestType::Batch, "batch", RunSingleDeviceBatch},
         {TestType::MultiStream, "multi_stream", RunSingleDeviceMultiStream},
         {TestType::All8SingleStream, "all8_single_stream", RunAllDevices},
     };

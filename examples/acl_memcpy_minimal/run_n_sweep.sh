@@ -21,7 +21,7 @@ echo "[sweep] bin=${BIN}"
 echo "[sweep] test_type=${TEST_TYPE}, io_size=${IO_SIZE}, iterations=${ITERS}"
 echo "[sweep] logs=${LOG_DIR}"
 
-for n in 1K 3K 5K 7K 9K 11K 13K 15K; do
+for n in 10 50 100 300 500 1000 2000 3000 5000 7500 10000; do
     log_file="${LOG_DIR}/n-${n}.log"
     echo
     echo "[run] -t ${TEST_TYPE} -s ${IO_SIZE} -n ${n} -i ${ITERS}"
