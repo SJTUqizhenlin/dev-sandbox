@@ -20,13 +20,14 @@ namespace {
 constexpr int kDeviceId = 0;
 constexpr int kAllDeviceCount = 8;
 constexpr int kWarmupIterations = 5;
-constexpr int kMeasureIterations = 50;
+constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
 constexpr std::size_t kDefaultBufferCount = 1024;
 
 struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
+    std::size_t iterations = kDefaultMeasureIterations;
     bool showHelp = false;
 };
 
@@ -88,6 +89,8 @@ void PrintUsage(const char* prog)
               << " Default: " << SizeLabel(kDefaultIoSize) << "\n"
               << "  -n <buffer_count>  Number of buffers per measurement iteration."
               << " Default: " << kDefaultBufferCount << "\n"
+              << "  -i <iterations>    Number of measured iterations."
+              << " Default: " << kDefaultMeasureIterations << "\n"
               << "  -h                 Show this help message.\n";
 }
 
@@ -160,6 +163,14 @@ bool ParseArgs(int argc, char const* argv[], Options* options)
             }
             continue;
         }
+        if (arg == "-i") {
+            if (i + 1 >= argc || !ParseSize(argv[++i], &options->iterations)) {
+                std::cerr << "Invalid value for -i.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
 
         std::cerr << "Unknown option: " << arg << "\n";
         PrintUsage(argv[0]);
@@ -169,6 +180,8 @@ bool ParseArgs(int argc, char const* argv[], Options* options)
 }
 
 struct CopyBuffers {
+    void* hostBase = nullptr;
+    void* deviceBase = nullptr;
     std::vector<void*> hostSrc;
     std::vector<void*> device;
 };
@@ -218,11 +231,11 @@ double Average(const std::vector<double>& values)
     return values.empty() ? 0.0 : sum / static_cast<double>(values.size());
 }
 
-void PrintTableHeader(const std::string& title, std::size_t bufferCount)
+void PrintTableHeader(const std::string& title, const Options& options)
 {
     std::cout << title << "\n"
-              << "warmup=" << kWarmupIterations << ", iterations=" << kMeasureIterations
-              << ", buffers_per_iteration=" << bufferCount
+              << "warmup=" << kWarmupIterations << ", iterations=" << options.iterations
+              << ", buffers_per_iteration=" << options.bufferCount
               << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
@@ -286,8 +299,8 @@ bool MeasureCopyOnce(const std::vector<void*>& dst, const std::vector<void*>& sr
 }
 
 bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst,
-                     const std::vector<void*>& src, std::size_t size, aclrtMemcpyKind kind,
-                     aclrtStream stream)
+                      const std::vector<void*>& src, std::size_t size, aclrtMemcpyKind kind,
+                      aclrtStream stream, std::size_t iterations)
 {
     aclrtEvent start = nullptr;
     aclrtEvent end = nullptr;
@@ -311,7 +324,7 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
     double submitUs = 0.0;
     double copyUs = 0.0;
     if (ok) {
-        for (int i = 0; i < kMeasureIterations; ++i) {
+        for (std::size_t i = 0; i < iterations; ++i) {
             Timing timing;
             if (!MeasureCopyOnce(dst, src, size, kind, stream, start, end, &timing)) {
                 ok = false;
@@ -333,8 +346,8 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
         return false;
     }
 
-    const double avgSubmitUs = submitUs / kMeasureIterations;
-    const double avgCopyUs = copyUs / kMeasureIterations;
+    const double avgSubmitUs = submitUs / static_cast<double>(iterations);
+    const double avgCopyUs = copyUs / static_cast<double>(iterations);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
     PrintTableRow(direction, size, src.size(), avgSubmitUs, avgWaitUs, avgCopyUs);
@@ -343,21 +356,25 @@ bool RunOneDirection(const std::string& direction, const std::vector<void*>& dst
 
 bool AllocateBuffers(std::size_t size, std::size_t bufferCount, CopyBuffers* buffers)
 {
+    const std::size_t total = size * bufferCount;
     buffers->hostSrc.assign(bufferCount, nullptr);
     buffers->device.assign(bufferCount, nullptr);
 
+    // Match the main copy benchmark: allocate one large host/device buffer and
+    // slice it into fixed-size copy entries.
+    if (!CHECK_ACL(aclrtMallocHost(&buffers->hostBase, total))) {
+        return false;
+    }
+    if (!CHECK_ACL(aclrtMalloc(&buffers->deviceBase, total, ACL_MEM_MALLOC_HUGE_FIRST))) {
+        return false;
+    }
+    FillHostData(buffers->hostBase, total);
+
     for (std::size_t i = 0; i < bufferCount; ++i) {
-        // aclrtMallocHost allocates page-locked host memory suitable for DMA transfers.
-        if (!CHECK_ACL(aclrtMallocHost(&buffers->hostSrc[i], size))) {
-            return false;
-        }
-
-        // aclrtMalloc allocates memory on the current Ascend device.
-        if (!CHECK_ACL(aclrtMalloc(&buffers->device[i], size, ACL_MEM_MALLOC_HUGE_FIRST))) {
-            return false;
-        }
-
-        FillHostData(buffers->hostSrc[i], size);
+        buffers->hostSrc[i] =
+            static_cast<void*>(static_cast<char*>(buffers->hostBase) + i * size);
+        buffers->device[i] =
+            static_cast<void*>(static_cast<char*>(buffers->deviceBase) + i * size);
     }
     return true;
 }
@@ -365,38 +382,36 @@ bool AllocateBuffers(std::size_t size, std::size_t bufferCount, CopyBuffers* buf
 bool FreeBuffers(CopyBuffers* buffers)
 {
     bool ok = true;
-    for (void* ptr : buffers->device) {
-        if (ptr != nullptr) {
-            aclError ret = aclrtFree(ptr);
-            if (ret != ACL_SUCCESS) {
-                std::cerr << "aclrtFree failed, error code: " << ret << "\n";
-                ok = false;
-            }
+    if (buffers->deviceBase != nullptr) {
+        aclError ret = aclrtFree(buffers->deviceBase);
+        if (ret != ACL_SUCCESS) {
+            std::cerr << "aclrtFree failed, error code: " << ret << "\n";
+            ok = false;
         }
+        buffers->deviceBase = nullptr;
     }
-    for (void* ptr : buffers->hostSrc) {
-        if (ptr != nullptr) {
-            aclError ret = aclrtFreeHost(ptr);
-            if (ret != ACL_SUCCESS) {
-                std::cerr << "aclrtFreeHost(hostSrc) failed, error code: " << ret << "\n";
-                ok = false;
-            }
+    if (buffers->hostBase != nullptr) {
+        aclError ret = aclrtFreeHost(buffers->hostBase);
+        if (ret != ACL_SUCCESS) {
+            std::cerr << "aclrtFreeHost(hostSrc) failed, error code: " << ret << "\n";
+            ok = false;
         }
+        buffers->hostBase = nullptr;
     }
     return ok;
 }
 
-bool RunSize(std::size_t size, std::size_t bufferCount, aclrtStream stream)
+bool RunSize(const Options& options, aclrtStream stream)
 {
     CopyBuffers buffers;
     bool ok = true;
-    ok = AllocateBuffers(size, bufferCount, &buffers);
+    ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
 
     // H2D: dst is device memory, destMax is device buffer size, src is host memory,
     // count is the bytes to copy, kind selects Host-to-Device, stream carries the async work.
     if (ok) {
-        ok = RunOneDirection("H2D", buffers.device, buffers.hostSrc, size,
-                              ACL_MEMCPY_HOST_TO_DEVICE, stream);
+        ok = RunOneDirection("H2D", buffers.device, buffers.hostSrc, options.ioSize,
+                             ACL_MEMCPY_HOST_TO_DEVICE, stream, options.iterations);
     }
 
     // aclrtFree releases device memory; aclrtFreeHost releases host memory.
@@ -419,9 +434,8 @@ bool RunSingleDevice(const Options& options)
         return false;
     }
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device H2D benchmark",
-                     options.bufferCount);
-    ok = RunSize(options.ioSize, options.bufferCount, stream);
+    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device H2D benchmark", options);
+    ok = RunSize(options, stream);
 
     if (stream != nullptr) {
         aclError ret = aclrtDestroyStream(stream);
@@ -470,9 +484,9 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
         endBarrier->Wait();
     }
 
-    result->submitUs.assign(kMeasureIterations, 0.0);
-    result->copyUs.assign(kMeasureIterations, 0.0);
-    for (int i = 0; i < kMeasureIterations; ++i) {
+    result->submitUs.assign(options.iterations, 0.0);
+    result->copyUs.assign(options.iterations, 0.0);
+    for (std::size_t i = 0; i < options.iterations; ++i) {
         beginBarrier->Wait();
         if (ok) {
             Timing timing;
@@ -528,9 +542,9 @@ bool RunAllDevices(const Options& options)
         return false;
     }
 
-    std::vector<double> maxSubmitUs(kMeasureIterations, 0.0);
-    std::vector<double> maxCopyUs(kMeasureIterations, 0.0);
-    for (int iter = 0; iter < kMeasureIterations; ++iter) {
+    std::vector<double> maxSubmitUs(options.iterations, 0.0);
+    std::vector<double> maxCopyUs(options.iterations, 0.0);
+    for (std::size_t iter = 0; iter < options.iterations; ++iter) {
         for (const auto& result : results) {
             maxSubmitUs[iter] = std::max(maxSubmitUs[iter], result.submitUs[iter]);
             maxCopyUs[iter] = std::max(maxCopyUs[iter], result.copyUs[iter]);
@@ -541,8 +555,7 @@ bool RunAllDevices(const Options& options)
     const double avgCopyUs = Average(maxCopyUs);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark",
-                     options.bufferCount);
+    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark", options);
     PrintTableRow("H2D_ALL8", options.ioSize, options.bufferCount * kAllDeviceCount,
                   avgSubmitUs, avgWaitUs, avgCopyUs);
     return true;

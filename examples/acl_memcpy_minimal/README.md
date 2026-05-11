@@ -21,11 +21,12 @@ The program follows this basic runtime flow:
 1. `aclInit` initializes AscendCL for the current process.
 2. `aclrtSetDevice` selects the Ascend device to use.
 3. `aclrtCreateStream` creates a stream for asynchronous work.
-4. `aclrtMallocHost` allocates pinned host memory.
-5. `aclrtMalloc` allocates device memory.
-6. `aclrtMemcpyAsync` submits several asynchronous memory copies to the stream.
-7. `aclrtSynchronizeStream` waits until the submitted copy has finished.
-8. `aclrtFree`, `aclrtFreeHost`, `aclrtDestroyStream`, `aclrtResetDevice`, and
+4. `aclrtMallocHost` allocates one large pinned host memory region.
+5. `aclrtMalloc` allocates one large device memory region.
+6. The large regions are sliced into `Count` fixed-size copy entries.
+7. `aclrtMemcpyAsync` submits several asynchronous memory copies to the stream.
+8. `aclrtSynchronizeStream` waits until the submitted copy has finished.
+9. `aclrtFree`, `aclrtFreeHost`, `aclrtDestroyStream`, `aclrtResetDevice`, and
    `aclFinalize` release resources.
 
 The source pointer is host memory and the destination pointer is device memory.
@@ -86,7 +87,7 @@ export LD_LIBRARY_PATH=/usr/local/Ascend/ascend-toolkit/latest/lib64:${LD_LIBRAR
 ## Run
 
 ```bash
-./h2d_d2h_async_memcpy -s 64K -n 1024
+./h2d_d2h_async_memcpy -s 64K -n 1024 -i 128
 ```
 
 Options:
@@ -94,6 +95,7 @@ Options:
 ```text
 -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
 -n <buffer_count>  Number of buffers copied per measurement iteration.
+-i <iterations>    Number of measured iterations. Default: 128.
 ```
 
 The single-device test is fixed to device 0.
@@ -103,14 +105,14 @@ Example output:
 
 ```text
 AscendCL aclrtMemcpyAsync single-device H2D benchmark
-warmup=5, iterations=50, buffers_per_iteration=1024
+warmup=5, iterations=128, buffers_per_iteration=1024
 
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
 --------------------------------------------------------------------------------------
 H2D            64 KB    1024       160.200      1839.800      2000.000        32000.00
 
 AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark
-warmup=5, iterations=50, buffers_per_iteration=1024
+warmup=5, iterations=128, buffers_per_iteration=1024
 
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)        BW(MB/s)
 --------------------------------------------------------------------------------------
