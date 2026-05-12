@@ -920,12 +920,19 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
     }
 
     bool ok = true;
+    bool aclInitialized = false;
+    bool deviceSet = false;
     aclrtStream stream = nullptr;
     aclrtEvent start = nullptr;
     aclrtEvent end = nullptr;
     CopyBuffers buffers;
 
-    ok = CHECK_ACL(aclrtSetDevice(deviceId));
+    ok = CHECK_ACL(aclInit(nullptr));
+    aclInitialized = ok;
+    if (ok) {
+        ok = CHECK_ACL(aclrtSetDevice(deviceId));
+        deviceSet = ok;
+    }
     if (ok) {
         ok = CHECK_ACL(aclrtCreateStream(&stream));
     }
@@ -976,6 +983,12 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
     }
     if (stream != nullptr) {
         ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
+    }
+    if (deviceSet) {
+        ok = CHECK_ACL(aclrtResetDevice(deviceId)) && ok;
+    }
+    if (aclInitialized) {
+        ok = CHECK_ACL(aclFinalize()) && ok;
     }
     result->ok = result->ok && ok;
 }
@@ -1378,7 +1391,6 @@ const std::vector<TestCase>& TestCases()
         {TestType::SingleStream, "single_stream", RunSingleDevice},
         {TestType::Batch, "batch", RunSingleDeviceBatch},
         {TestType::MultiStream, "multi_stream", RunSingleDeviceMultiStream},
-        {TestType::All8SingleStream, "all8_single_stream", RunAllDevices},
     };
     return cases;
 }
@@ -1399,9 +1411,7 @@ bool RunSelectedTests(const Options& options)
 
 int DeviceResetCount(TestType type)
 {
-    if (type == TestType::All || type == TestType::All8SingleStream) {
-        return kAllDeviceCount;
-    }
+    (void)type;
     return 1;
 }
 
@@ -1416,6 +1426,9 @@ int main(int argc, char const* argv[])
 
     if (options.testType == TestType::All8Process) {
         return RunAllDeviceProcesses(options) ? 0 : 1;
+    }
+    if (options.testType == TestType::All8SingleStream) {
+        return RunAllDevices(options) ? 0 : 1;
     }
 
     // aclInit initializes AscendCL runtime state for this process.
@@ -1441,6 +1454,10 @@ int main(int argc, char const* argv[])
     aclError finalizeRet = aclFinalize();
     if (!CHECK_ACL(finalizeRet)) {
         ok = false;
+    }
+
+    if (ok && options.testType == TestType::All) {
+        ok = RunAllDevices(options);
     }
 
     return ok ? 0 : 1;

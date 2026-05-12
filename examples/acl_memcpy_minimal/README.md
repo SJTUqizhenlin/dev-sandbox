@@ -18,8 +18,9 @@ copy list with one `aclrtMemcpyBatchAsync` call and uses one H2D attribute entry
 for all items. The 48-stream test splits the same buffer list across up to 48
 streams, records one total start event, makes the other streams wait on that
 event, and records one total end event after all streams have finished. The
-8-device thread test uses one host thread per device and a CPU barrier to align
-each iteration, avoiding cross-device event dependencies in the benchmark code.
+8-device thread test uses one host thread per device, each thread initializes
+AscendCL independently, and a CPU barrier aligns each iteration while avoiding
+cross-device event dependencies in the benchmark code.
 The 8-process test forks 8 children before any parent-process `aclInit`; each
 child initializes AscendCL independently, owns one device, and synchronizes each
 iteration with the parent through pipes.
@@ -136,7 +137,9 @@ The single-device test is fixed to device 0.
 The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
 The multi-stream single-device test is also fixed to device 0 and uses up to 48
-streams. The 8-device thread and process tests use devices 0 through 7.
+streams. The 8-device thread and process tests use devices 0 through 7. In the
+8-thread test, each worker thread calls `aclInit`, selects its own device, and
+calls `aclFinalize` after releasing its resources.
 
 Examples:
 
