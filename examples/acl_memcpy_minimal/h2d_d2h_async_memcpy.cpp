@@ -68,6 +68,15 @@ bool CheckAcl(aclError ret, const char* expr, const char* file, int line)
 
 #define CHECK_ACL(expr) CheckAcl((expr), #expr, __FILE__, __LINE__)
 
+bool InitAclReference()
+{
+    const aclError ret = aclInit(nullptr);
+    if (ret == ACL_SUCCESS || ret == ACL_ERROR_REPEAT_INITIALIZE) {
+        return true;
+    }
+    return CheckAcl(ret, "aclInit(nullptr)", __FILE__, __LINE__);
+}
+
 double ElapsedUs(std::chrono::steady_clock::time_point begin,
                  std::chrono::steady_clock::time_point end)
 {
@@ -927,7 +936,7 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
     aclrtEvent end = nullptr;
     CopyBuffers buffers;
 
-    ok = CHECK_ACL(aclInit(nullptr));
+    ok = InitAclReference();
     aclInitialized = ok;
     if (ok) {
         ok = CHECK_ACL(aclrtSetDevice(deviceId));
@@ -988,7 +997,7 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
         ok = CHECK_ACL(aclrtResetDevice(deviceId)) && ok;
     }
     if (aclInitialized) {
-        ok = CHECK_ACL(aclFinalize()) && ok;
+        ok = CHECK_ACL(aclFinalizeReference()) && ok;
     }
     result->ok = result->ok && ok;
 }

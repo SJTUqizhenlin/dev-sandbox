@@ -138,8 +138,9 @@ The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
 The multi-stream single-device test is also fixed to device 0 and uses up to 48
 streams. The 8-device thread and process tests use devices 0 through 7. In the
-8-thread test, each worker thread calls `aclInit`, selects its own device, and
-calls `aclFinalize` after releasing its resources.
+8-thread test, each worker thread calls `aclInit`, treats
+`ACL_ERROR_REPEAT_INITIALIZE` as a usable already-initialized state, selects its
+own device, and calls `aclFinalizeReference` after releasing its resources.
 
 Examples:
 
