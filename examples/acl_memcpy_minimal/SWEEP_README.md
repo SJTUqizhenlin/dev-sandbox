@@ -30,6 +30,7 @@ Useful overrides:
 TEST_TYPE=multi_stream ./run_n_sweep.sh
 TEST_TYPE=batch ./run_n_sweep.sh
 TEST_TYPE=all8_single_stream ./run_n_sweep.sh
+TEST_TYPE=all8_process ./run_n_sweep.sh
 IO_SIZE=32K ITERS=256 ./run_n_sweep.sh
 BIN=/path/to/h2d_d2h_async_memcpy ./run_n_sweep.sh
 LOG_DIR=/tmp/h2d-n-sweep ./run_n_sweep.sh
@@ -42,6 +43,7 @@ single_stream
 batch
 multi_stream
 all8_single_stream
+all8_process
 all
 ```
 

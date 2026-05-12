@@ -8,8 +8,9 @@ The program measures asynchronous Host-to-Device (H2D) copies for one requested
 buffer size and buffer count. Use `-t` to choose one test type: a single-device
 single-stream test on device 0, a single-device `aclrtMemcpyBatchAsync` test on
 device 0, a single-device 48-stream test on device 0, an 8-device simultaneous
-test where each device reads from its own host buffer into its own device
-buffer, or `all` to run all of them.
+thread test where each device reads from its own host buffer into its own device
+buffer, or an 8-process test where each child process owns one device. `all`
+runs the in-process tests and does not include the separate 8-process test.
 
 For each single-stream measurement iteration, the test submits a batch of async
 copies to one stream and then synchronizes once. The batch test submits the same
@@ -17,8 +18,11 @@ copy list with one `aclrtMemcpyBatchAsync` call and uses one H2D attribute entry
 for all items. The 48-stream test splits the same buffer list across up to 48
 streams, records one total start event, makes the other streams wait on that
 event, and records one total end event after all streams have finished. The
-8-device test uses one host thread per device and a CPU barrier to align each
-iteration, avoiding cross-device event dependencies in the benchmark code.
+8-device thread test uses one host thread per device and a CPU barrier to align
+each iteration, avoiding cross-device event dependencies in the benchmark code.
+The 8-process test forks 8 children before any parent-process `aclInit`; each
+child initializes AscendCL independently, owns one device, and synchronizes each
+iteration with the parent through pipes.
 
 ## What It Shows
 
@@ -80,8 +84,8 @@ Dir          Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(
 For `H2D_BATCH`, `Count` is the requested `-n` buffer count submitted through
 one `aclrtMemcpyBatchAsync` call. For `H2D_MS48`, `Count` is still the requested
 `-n` buffer count; the buffers are divided across up to 48 streams. For
-`H2D_ALL8`, `Count` is `-n * 8` because all 8 devices copy their own `-n`
-buffers in the same measurement iteration.
+`H2D_ALL8` and `H2D_ALL8P`, `Count` is `-n * 8` because all 8 devices copy their
+own `-n` buffers in the same measurement iteration.
 
 ## Build
 
@@ -111,7 +115,8 @@ Options:
 
 ```text
 -t <test_type>     Test to run. Default: single_stream.
-                   all, single_stream, batch, multi_stream, all8_single_stream
+                   all, single_stream, batch, multi_stream,
+                   all8_single_stream, all8_process
 -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
 -n <buffer_count>  Number of buffers copied per measurement iteration.
 -i <iterations>    Number of measured iterations. Default: 128.
@@ -124,13 +129,14 @@ single, ss                  -> single_stream
 batch_async                 -> batch
 multi, ms, ms48             -> multi_stream
 all8, multi_device          -> all8_single_stream
+all8_proc, multi_process    -> all8_process
 ```
 
 The single-device test is fixed to device 0.
 The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
 The multi-stream single-device test is also fixed to device 0 and uses up to 48
-streams. The 8-device test uses devices 0 through 7.
+streams. The 8-device thread and process tests use devices 0 through 7.
 
 Examples:
 
@@ -139,10 +145,11 @@ Examples:
 ./h2d_d2h_async_memcpy -t batch -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t multi_stream -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all8_single_stream -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all -s 64K -n 1024 -i 128
 ```
 
-Example output with `-t all`:
+Example output snippets:
 
 ```text
 AscendCL aclrtMemcpyAsync single-device H2D benchmark
@@ -172,4 +179,11 @@ warmup=5, iterations=128, buffers_per_iteration=1024
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
 --------------------------------------------------------------------------------------------------------------------
 H2D_ALL8       64 KB    8192      1200.000      2800.000      4000.000           0.146         0.488       128000.00
+
+AscendCL aclrtMemcpyAsync 8-process simultaneous H2D benchmark
+warmup=5, iterations=128, buffers_per_iteration=1024
+
+Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
+--------------------------------------------------------------------------------------------------------------------
+H2D_ALL8P      64 KB    8192      1200.000      2800.000      4000.000           0.146         0.488       128000.00
 ```

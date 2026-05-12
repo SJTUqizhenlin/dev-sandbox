@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
+#include <csignal>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -14,6 +16,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -31,6 +39,7 @@ enum class TestType {
     Batch,
     MultiStream,
     All8SingleStream,
+    All8Process,
 };
 
 struct Options {
@@ -113,6 +122,8 @@ const char* TestTypeName(TestType type)
             return "multi_stream";
         case TestType::All8SingleStream:
             return "all8_single_stream";
+        case TestType::All8Process:
+            return "all8_process";
     }
     return "unknown";
 }
@@ -145,6 +156,11 @@ bool ParseTestType(const std::string& text, TestType* type)
         *type = TestType::All8SingleStream;
         return true;
     }
+    if (name == "all8_process" || name == "all8_proc" || name == "multi_process" ||
+        name == "multi_proc" || name == "process") {
+        *type = TestType::All8Process;
+        return true;
+    }
     return false;
 }
 
@@ -157,7 +173,7 @@ void PrintUsage(const char* prog)
               << "  -t <test_type>     Test to run. Default: "
               << TestTypeName(TestType::SingleStream) << "\n"
               << "                     all, single_stream, batch, multi_stream,"
-              << " all8_single_stream\n"
+              << " all8_single_stream, all8_process\n"
               << "  -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported."
               << " Default: " << SizeLabel(kDefaultIoSize) << "\n"
               << "  -n <buffer_count>  Number of buffers per measurement iteration."
@@ -283,6 +299,11 @@ struct DeviceTimings {
     bool ok = false;
     std::vector<double> submitUs;
     std::vector<double> copyUs;
+};
+
+struct ProcessResultHeader {
+    int ok = 0;
+    std::uint64_t iterations = 0;
 };
 
 struct StreamTask {
@@ -1005,6 +1026,346 @@ bool RunAllDevices(const Options& options)
     return true;
 }
 
+#ifndef _WIN32
+bool ReadExact(int fd, void* data, std::size_t size)
+{
+    char* ptr = static_cast<char*>(data);
+    std::size_t done = 0;
+    while (done < size) {
+        const ssize_t ret = read(fd, ptr + done, size - done);
+        if (ret > 0) {
+            done += static_cast<std::size_t>(ret);
+            continue;
+        }
+        if (ret == 0) {
+            return false;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool WriteExact(int fd, const void* data, std::size_t size)
+{
+    const char* ptr = static_cast<const char*>(data);
+    std::size_t done = 0;
+    while (done < size) {
+        const ssize_t ret = write(fd, ptr + done, size - done);
+        if (ret > 0) {
+            done += static_cast<std::size_t>(ret);
+            continue;
+        }
+        if (ret < 0 && errno == EINTR) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+void CloseFd(int* fd)
+{
+    if (fd != nullptr && *fd >= 0) {
+        close(*fd);
+        *fd = -1;
+    }
+}
+
+void WriteProcessResult(int fd, bool ok, const std::vector<double>& submitUs,
+                        const std::vector<double>& copyUs)
+{
+    ProcessResultHeader header;
+    header.ok = ok ? 1 : 0;
+    header.iterations = static_cast<std::uint64_t>(submitUs.size());
+    WriteExact(fd, &header, sizeof(header));
+    if (!submitUs.empty()) {
+        WriteExact(fd, submitUs.data(), submitUs.size() * sizeof(double));
+        WriteExact(fd, copyUs.data(), copyUs.size() * sizeof(double));
+    }
+}
+
+void RunAllDeviceProcessChild(int deviceId, const Options& options, int startReadFd,
+                              int barrierWriteFd, int resultWriteFd)
+{
+    bool ok = true;
+    bool aclInitialized = false;
+    bool deviceSet = false;
+    aclrtStream stream = nullptr;
+    aclrtEvent start = nullptr;
+    aclrtEvent end = nullptr;
+    CopyBuffers buffers;
+    std::vector<double> submitUs(options.iterations, 0.0);
+    std::vector<double> copyUs(options.iterations, 0.0);
+
+    ok = CHECK_ACL(aclInit(nullptr));
+    aclInitialized = ok;
+    if (ok) {
+        ok = CHECK_ACL(aclrtSetDevice(deviceId));
+        deviceSet = ok;
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateStream(&stream));
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&start));
+    }
+    if (ok) {
+        ok = CHECK_ACL(aclrtCreateEvent(&end));
+    }
+    if (ok) {
+        ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
+    }
+
+    const char ready = ok ? 'R' : 'E';
+    WriteExact(barrierWriteFd, &ready, sizeof(ready));
+
+    const std::size_t totalSteps = kWarmupIterations + options.iterations;
+    for (std::size_t step = 0; step < totalSteps; ++step) {
+        char startSignal = 0;
+        if (!ReadExact(startReadFd, &startSignal, sizeof(startSignal))) {
+            ok = false;
+            break;
+        }
+
+        Timing timing;
+        if (ok) {
+            ok = MeasureCopyOnce(buffers.device, buffers.hostSrc, options.ioSize,
+                                 ACL_MEMCPY_HOST_TO_DEVICE, stream, start, end, &timing);
+        }
+        if (ok && step >= kWarmupIterations) {
+            const std::size_t iter = step - kWarmupIterations;
+            submitUs[iter] = timing.submitUs;
+            copyUs[iter] = timing.copyUs;
+        }
+
+        const char done = ok ? 'D' : 'E';
+        WriteExact(barrierWriteFd, &done, sizeof(done));
+    }
+
+    ok = FreeBuffers(&buffers) && ok;
+    if (end != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
+    }
+    if (start != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
+    }
+    if (stream != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
+    }
+    if (deviceSet) {
+        ok = CHECK_ACL(aclrtResetDevice(deviceId)) && ok;
+    }
+    if (aclInitialized) {
+        ok = CHECK_ACL(aclFinalize()) && ok;
+    }
+
+    WriteProcessResult(resultWriteFd, ok, submitUs, copyUs);
+    CloseFd(&startReadFd);
+    CloseFd(&barrierWriteFd);
+    CloseFd(&resultWriteFd);
+    _exit(ok ? 0 : 1);
+}
+
+struct ChildProcess {
+    pid_t pid = -1;
+    int startWriteFd = -1;
+    int barrierReadFd = -1;
+    int resultReadFd = -1;
+};
+
+bool ReadChildTimings(const ChildProcess& child, std::size_t iterations, DeviceTimings* result)
+{
+    if (result == nullptr) {
+        return false;
+    }
+    ProcessResultHeader header;
+    if (!ReadExact(child.resultReadFd, &header, sizeof(header))) {
+        return false;
+    }
+    if (header.iterations != iterations) {
+        return false;
+    }
+
+    result->submitUs.assign(iterations, 0.0);
+    result->copyUs.assign(iterations, 0.0);
+    if (iterations > 0) {
+        if (!ReadExact(child.resultReadFd, result->submitUs.data(),
+                       iterations * sizeof(double))) {
+            return false;
+        }
+        if (!ReadExact(child.resultReadFd, result->copyUs.data(), iterations * sizeof(double))) {
+            return false;
+        }
+    }
+    result->ok = header.ok != 0;
+    return result->ok;
+}
+
+bool SpawnAllDeviceProcess(int deviceId, const Options& options, ChildProcess* child)
+{
+    if (child == nullptr) {
+        return false;
+    }
+
+    int startPipe[2] = {-1, -1};
+    int barrierPipe[2] = {-1, -1};
+    int resultPipe[2] = {-1, -1};
+    if (pipe(startPipe) != 0 || pipe(barrierPipe) != 0 || pipe(resultPipe) != 0) {
+        std::cerr << "pipe failed for device " << deviceId << ".\n";
+        CloseFd(&startPipe[0]);
+        CloseFd(&startPipe[1]);
+        CloseFd(&barrierPipe[0]);
+        CloseFd(&barrierPipe[1]);
+        CloseFd(&resultPipe[0]);
+        CloseFd(&resultPipe[1]);
+        return false;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        std::cerr << "fork failed for device " << deviceId << ".\n";
+        CloseFd(&startPipe[0]);
+        CloseFd(&startPipe[1]);
+        CloseFd(&barrierPipe[0]);
+        CloseFd(&barrierPipe[1]);
+        CloseFd(&resultPipe[0]);
+        CloseFd(&resultPipe[1]);
+        return false;
+    }
+
+    if (pid == 0) {
+        CloseFd(&startPipe[1]);
+        CloseFd(&barrierPipe[0]);
+        CloseFd(&resultPipe[0]);
+        RunAllDeviceProcessChild(deviceId, options, startPipe[0], barrierPipe[1],
+                                 resultPipe[1]);
+    }
+
+    CloseFd(&startPipe[0]);
+    CloseFd(&barrierPipe[1]);
+    CloseFd(&resultPipe[1]);
+    child->pid = pid;
+    child->startWriteFd = startPipe[1];
+    child->barrierReadFd = barrierPipe[0];
+    child->resultReadFd = resultPipe[0];
+    return true;
+}
+
+void CloseChildPipes(ChildProcess* child)
+{
+    if (child == nullptr) {
+        return;
+    }
+    CloseFd(&child->startWriteFd);
+    CloseFd(&child->barrierReadFd);
+    CloseFd(&child->resultReadFd);
+}
+
+bool RunAllDeviceProcesses(const Options& options)
+{
+    std::signal(SIGPIPE, SIG_IGN);
+
+    std::vector<ChildProcess> children(kAllDeviceCount);
+    bool ok = true;
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        ok = SpawnAllDeviceProcess(device, options, &children[device]) && ok;
+    }
+    if (!ok) {
+        for (auto& child : children) {
+            CloseChildPipes(&child);
+        }
+        for (const auto& child : children) {
+            if (child.pid > 0) {
+                waitpid(child.pid, nullptr, 0);
+            }
+        }
+        return false;
+    }
+
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        char ready = 0;
+        if (!ReadExact(children[device].barrierReadFd, &ready, sizeof(ready)) ||
+            ready != 'R') {
+            std::cerr << "device " << device << " process failed during setup.\n";
+            ok = false;
+        }
+    }
+
+    const std::size_t totalSteps = kWarmupIterations + options.iterations;
+    for (std::size_t step = 0; ok && step < totalSteps; ++step) {
+        const char start = 'S';
+        for (auto& child : children) {
+            if (!WriteExact(child.startWriteFd, &start, sizeof(start))) {
+                ok = false;
+            }
+        }
+        for (int device = 0; device < kAllDeviceCount; ++device) {
+            char done = 0;
+            if (!ReadExact(children[device].barrierReadFd, &done, sizeof(done)) ||
+                done != 'D') {
+                std::cerr << "device " << device << " process failed during copy step.\n";
+                ok = false;
+            }
+        }
+    }
+
+    for (auto& child : children) {
+        CloseFd(&child.startWriteFd);
+        CloseFd(&child.barrierReadFd);
+    }
+
+    std::vector<DeviceTimings> results(kAllDeviceCount);
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        if (!ReadChildTimings(children[device], options.iterations, &results[device])) {
+            std::cerr << "device " << device << " process failed to return timings.\n";
+            ok = false;
+        }
+        CloseFd(&children[device].resultReadFd);
+    }
+
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        int status = 0;
+        if (waitpid(children[device].pid, &status, 0) < 0 || !WIFEXITED(status) ||
+            WEXITSTATUS(status) != 0) {
+            std::cerr << "device " << device << " process exited abnormally.\n";
+            ok = false;
+        }
+    }
+
+    if (!ok) {
+        return false;
+    }
+
+    std::vector<double> maxSubmitUs(options.iterations, 0.0);
+    std::vector<double> maxCopyUs(options.iterations, 0.0);
+    for (std::size_t iter = 0; iter < options.iterations; ++iter) {
+        for (const auto& result : results) {
+            maxSubmitUs[iter] = std::max(maxSubmitUs[iter], result.submitUs[iter]);
+            maxCopyUs[iter] = std::max(maxCopyUs[iter], result.copyUs[iter]);
+        }
+    }
+
+    const double avgSubmitUs = Average(maxSubmitUs);
+    const double avgCopyUs = Average(maxCopyUs);
+    const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
+
+    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-process simultaneous H2D benchmark",
+                     options);
+    PrintTableRow("H2D_ALL8P", options.ioSize, options.bufferCount * kAllDeviceCount,
+                  avgSubmitUs, avgWaitUs, avgCopyUs);
+    return true;
+}
+#else
+bool RunAllDeviceProcesses(const Options&)
+{
+    std::cerr << "all8_process is only supported on Linux/POSIX platforms.\n";
+    return false;
+}
+#endif
+
 struct TestCase {
     TestType type;
     const char* name;
@@ -1051,6 +1412,10 @@ int main(int argc, char const* argv[])
     Options options;
     if (!ParseArgs(argc, argv, &options)) {
         return options.showHelp ? 0 : 1;
+    }
+
+    if (options.testType == TestType::All8Process) {
+        return RunAllDeviceProcesses(options) ? 0 : 1;
     }
 
     // aclInit initializes AscendCL runtime state for this process.
