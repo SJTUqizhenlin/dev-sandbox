@@ -997,7 +997,7 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
         ok = CHECK_ACL(aclrtResetDevice(deviceId)) && ok;
     }
     if (aclInitialized) {
-        ok = CHECK_ACL(aclFinalizeReference()) && ok;
+        ok = CHECK_ACL(aclFinalizeReference(nullptr)) && ok;
     }
     result->ok = result->ok && ok;
 }
