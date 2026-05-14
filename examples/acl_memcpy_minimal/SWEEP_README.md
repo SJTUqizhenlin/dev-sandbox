@@ -80,9 +80,9 @@ Run:
 ```
 
 The default device groups include single-device process baselines, anchored
-pairs such as `0,1` and `0,2`, adjacent pairs, several 4-device groups, and all
-8 devices. The table includes bandwidth, scale versus process device 0, and
-efficiency versus ideal linear scaling.
+pairs from device 0 to each other device, 4-device groups `0,1,2,3` and
+`0,4,5,6`, and all 8 devices. The table includes bandwidth, scale versus process
+device 0, and efficiency versus ideal linear scaling.
 
 Useful overrides:
 
