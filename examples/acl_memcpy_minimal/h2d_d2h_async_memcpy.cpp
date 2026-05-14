@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
@@ -33,6 +34,16 @@ constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
 constexpr std::size_t kDefaultBufferCount = 1024;
 
+std::vector<int> DefaultDevices()
+{
+    std::vector<int> devices;
+    devices.reserve(kAllDeviceCount);
+    for (int device = 0; device < kAllDeviceCount; ++device) {
+        devices.push_back(device);
+    }
+    return devices;
+}
+
 enum class TestType {
     All,
     SingleStream,
@@ -46,6 +57,7 @@ struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
     std::size_t iterations = kDefaultMeasureIterations;
+    std::vector<int> devices = DefaultDevices();
     TestType testType = TestType::SingleStream;
     bool showHelp = false;
 };
@@ -118,6 +130,18 @@ std::string NormalizeName(std::string text)
     return text;
 }
 
+std::string DeviceListLabel(const std::vector<int>& devices)
+{
+    std::string label;
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        if (i > 0) {
+            label += ",";
+        }
+        label += std::to_string(devices[i]);
+    }
+    return label;
+}
+
 const char* TestTypeName(TestType type)
 {
     switch (type) {
@@ -176,7 +200,8 @@ bool ParseTestType(const std::string& text, TestType* type)
 void PrintUsage(const char* prog)
 {
     std::cout << "Usage: " << (prog != nullptr ? prog : "h2d_async_memcpy")
-              << " [-t <test_type>] [-s <io_size>] [-n <buffer_count>] [-i <iterations>]\n"
+              << " [-t <test_type>] [-s <io_size>] [-n <buffer_count>] [-i <iterations>]"
+              << " [-d <device_list>]\n"
               << "\n"
               << "Options:\n"
               << "  -t <test_type>     Test to run. Default: "
@@ -189,6 +214,9 @@ void PrintUsage(const char* prog)
               << " Default: " << kDefaultBufferCount << "\n"
               << "  -i <iterations>    Number of measured iterations."
               << " Default: " << kDefaultMeasureIterations << "\n"
+              << "  -d <device_list>   Devices for all8_single_stream/all8_process."
+              << " Use comma or space separated IDs. Default: "
+              << DeviceListLabel(DefaultDevices()) << "\n"
               << "  -h                 Show this help message.\n";
 }
 
@@ -233,6 +261,68 @@ bool ParseSize(const std::string& text, std::size_t* value)
     return true;
 }
 
+bool ParseDeviceId(const std::string& text, int* device)
+{
+    if (text.empty() || device == nullptr) {
+        return false;
+    }
+    try {
+        std::size_t pos = 0;
+        const int parsed = std::stoi(text, &pos, 10);
+        if (pos != text.size() || parsed < 0) {
+            return false;
+        }
+        *device = parsed;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ParseDeviceList(const std::string& text, std::vector<int>* devices)
+{
+    if (text.empty() || devices == nullptr) {
+        return false;
+    }
+
+    std::vector<int> parsedDevices;
+    std::size_t begin = 0;
+    while (begin < text.size()) {
+        while (begin < text.size() &&
+               (text[begin] == ',' ||
+                std::isspace(static_cast<unsigned char>(text[begin])) != 0)) {
+            ++begin;
+        }
+        if (begin >= text.size()) {
+            break;
+        }
+
+        std::size_t end = begin;
+        while (end < text.size() && text[end] != ',' &&
+               std::isspace(static_cast<unsigned char>(text[end])) == 0) {
+            ++end;
+        }
+
+        const std::string token = text.substr(begin, end - begin);
+        int device = 0;
+        if (!ParseDeviceId(token, &device)) {
+            return false;
+        }
+        if (std::find(parsedDevices.begin(), parsedDevices.end(), device) !=
+            parsedDevices.end()) {
+            return false;
+        }
+        parsedDevices.push_back(device);
+        begin = end + 1;
+    }
+
+    if (parsedDevices.empty()) {
+        return false;
+    }
+    *devices = std::move(parsedDevices);
+    return true;
+}
+
 bool ParseArgs(int argc, char const* argv[], Options* options)
 {
     if (options == nullptr) {
@@ -272,6 +362,24 @@ bool ParseArgs(int argc, char const* argv[], Options* options)
         if (arg == "-i") {
             if (i + 1 >= argc || !ParseSize(argv[++i], &options->iterations)) {
                 std::cerr << "Invalid value for -i.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
+        if (arg == "-d") {
+            if (i + 1 >= argc) {
+                std::cerr << "Invalid value for -d.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            std::string deviceList = argv[++i];
+            while (i + 1 < argc && argv[i + 1][0] != '-') {
+                deviceList += ",";
+                deviceList += argv[++i];
+            }
+            if (!ParseDeviceList(deviceList, &options->devices)) {
+                std::cerr << "Invalid value for -d.\n";
                 PrintUsage(argv[0]);
                 return false;
             }
@@ -360,8 +468,12 @@ void PrintTableHeader(const std::string& title, const Options& options)
 {
     std::cout << title << "\n"
               << "warmup=" << kWarmupIterations << ", iterations=" << options.iterations
-              << ", buffers_per_iteration=" << options.bufferCount
-              << "\n\n";
+              << ", buffers_per_iteration=" << options.bufferCount;
+    if (options.testType == TestType::All8SingleStream ||
+        options.testType == TestType::All8Process) {
+        std::cout << ", devices=" << DeviceListLabel(options.devices);
+    }
+    std::cout << "\n\n";
 
     std::cout << std::left << std::setw(8) << "Dir" << std::right << std::setw(12) << "Size"
               << std::setw(8) << "Count" << std::setw(14) << "Submit(us)" << std::setw(14)
@@ -1004,23 +1116,26 @@ void RunAllDeviceWorker(int deviceId, const Options& options, Barrier* beginBarr
 
 bool RunAllDevices(const Options& options)
 {
-    Barrier beginBarrier(kAllDeviceCount);
-    Barrier endBarrier(kAllDeviceCount);
-    std::vector<DeviceTimings> results(kAllDeviceCount);
+    const std::size_t deviceCount = options.devices.size();
+    Barrier beginBarrier(static_cast<int>(deviceCount));
+    Barrier endBarrier(static_cast<int>(deviceCount));
+    std::vector<DeviceTimings> results(deviceCount);
     std::vector<std::thread> threads;
-    threads.reserve(kAllDeviceCount);
+    threads.reserve(deviceCount);
 
-    for (int device = 0; device < kAllDeviceCount; ++device) {
+    for (std::size_t index = 0; index < deviceCount; ++index) {
+        const int device = options.devices[index];
         threads.emplace_back(RunAllDeviceWorker, device, std::cref(options), &beginBarrier,
-                             &endBarrier, &results[device]);
+                             &endBarrier, &results[index]);
     }
     for (auto& thread : threads) {
         thread.join();
     }
 
     bool ok = true;
-    for (int device = 0; device < kAllDeviceCount; ++device) {
-        if (!results[device].ok) {
+    for (std::size_t index = 0; index < deviceCount; ++index) {
+        if (!results[index].ok) {
+            const int device = options.devices[index];
             std::cerr << "device " << device << " failed during all-device H2D test.\n";
             ok = false;
         }
@@ -1042,8 +1157,10 @@ bool RunAllDevices(const Options& options)
     const double avgCopyUs = Average(maxCopyUs);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark", options);
-    PrintTableRow("H2D_ALL8", options.ioSize, options.bufferCount * kAllDeviceCount,
+    PrintTableHeader("AscendCL aclrtMemcpyAsync multi-device simultaneous H2D benchmark",
+                     options);
+    const std::string rowName = deviceCount == kAllDeviceCount ? "H2D_ALL8" : "H2D_ALL";
+    PrintTableRow(rowName, options.ioSize, options.bufferCount * deviceCount,
                   avgSubmitUs, avgWaitUs, avgCopyUs);
     return true;
 }
@@ -1290,10 +1407,11 @@ bool RunAllDeviceProcesses(const Options& options)
 {
     std::signal(SIGPIPE, SIG_IGN);
 
-    std::vector<ChildProcess> children(kAllDeviceCount);
+    const std::size_t deviceCount = options.devices.size();
+    std::vector<ChildProcess> children(deviceCount);
     bool ok = true;
-    for (int device = 0; device < kAllDeviceCount; ++device) {
-        ok = SpawnAllDeviceProcess(device, options, &children[device]) && ok;
+    for (std::size_t index = 0; index < deviceCount; ++index) {
+        ok = SpawnAllDeviceProcess(options.devices[index], options, &children[index]) && ok;
     }
     if (!ok) {
         for (auto& child : children) {
@@ -1307,10 +1425,11 @@ bool RunAllDeviceProcesses(const Options& options)
         return false;
     }
 
-    for (int device = 0; device < kAllDeviceCount; ++device) {
+    for (std::size_t index = 0; index < deviceCount; ++index) {
         char ready = 0;
-        if (!ReadExact(children[device].barrierReadFd, &ready, sizeof(ready)) ||
+        if (!ReadExact(children[index].barrierReadFd, &ready, sizeof(ready)) ||
             ready != 'R') {
+            const int device = options.devices[index];
             std::cerr << "device " << device << " process failed during setup.\n";
             ok = false;
         }
@@ -1324,10 +1443,11 @@ bool RunAllDeviceProcesses(const Options& options)
                 ok = false;
             }
         }
-        for (int device = 0; device < kAllDeviceCount; ++device) {
+        for (std::size_t index = 0; index < deviceCount; ++index) {
             char done = 0;
-            if (!ReadExact(children[device].barrierReadFd, &done, sizeof(done)) ||
+            if (!ReadExact(children[index].barrierReadFd, &done, sizeof(done)) ||
                 done != 'D') {
+                const int device = options.devices[index];
                 std::cerr << "device " << device << " process failed during copy step.\n";
                 ok = false;
             }
@@ -1339,19 +1459,21 @@ bool RunAllDeviceProcesses(const Options& options)
         CloseFd(&child.barrierReadFd);
     }
 
-    std::vector<DeviceTimings> results(kAllDeviceCount);
-    for (int device = 0; device < kAllDeviceCount; ++device) {
-        if (!ReadChildTimings(children[device], options.iterations, &results[device])) {
+    std::vector<DeviceTimings> results(deviceCount);
+    for (std::size_t index = 0; index < deviceCount; ++index) {
+        if (!ReadChildTimings(children[index], options.iterations, &results[index])) {
+            const int device = options.devices[index];
             std::cerr << "device " << device << " process failed to return timings.\n";
             ok = false;
         }
-        CloseFd(&children[device].resultReadFd);
+        CloseFd(&children[index].resultReadFd);
     }
 
-    for (int device = 0; device < kAllDeviceCount; ++device) {
+    for (std::size_t index = 0; index < deviceCount; ++index) {
         int status = 0;
-        if (waitpid(children[device].pid, &status, 0) < 0 || !WIFEXITED(status) ||
+        if (waitpid(children[index].pid, &status, 0) < 0 || !WIFEXITED(status) ||
             WEXITSTATUS(status) != 0) {
+            const int device = options.devices[index];
             std::cerr << "device " << device << " process exited abnormally.\n";
             ok = false;
         }
@@ -1374,9 +1496,10 @@ bool RunAllDeviceProcesses(const Options& options)
     const double avgCopyUs = Average(maxCopyUs);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync 8-process simultaneous H2D benchmark",
+    PrintTableHeader("AscendCL aclrtMemcpyAsync multi-process simultaneous H2D benchmark",
                      options);
-    PrintTableRow("H2D_ALL8P", options.ioSize, options.bufferCount * kAllDeviceCount,
+    const std::string rowName = deviceCount == kAllDeviceCount ? "H2D_ALL8P" : "H2D_ALLP";
+    PrintTableRow(rowName, options.ioSize, options.bufferCount * deviceCount,
                   avgSubmitUs, avgWaitUs, avgCopyUs);
     return true;
 }

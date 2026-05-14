@@ -21,9 +21,11 @@ event, and records one total end event after all streams have finished. The
 8-device thread test uses one host thread per device, each thread initializes
 AscendCL independently, and a CPU barrier aligns each iteration while avoiding
 cross-device event dependencies in the benchmark code.
-The 8-process test forks 8 children before any parent-process `aclInit`; each
-child initializes AscendCL independently, owns one device, and synchronizes each
-iteration with the parent through pipes.
+The multi-process test forks one child per selected device before any
+parent-process `aclInit`; each child initializes AscendCL independently, owns
+one selected device, and synchronizes each iteration with the parent through
+pipes. Use `-d` to choose the devices for the thread or process multi-device
+tests.
 
 ## What It Shows
 
@@ -121,6 +123,8 @@ Options:
 -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
 -n <buffer_count>  Number of buffers copied per measurement iteration.
 -i <iterations>    Number of measured iterations. Default: 128.
+-d <device_list>   Devices for all8_single_stream/all8_process. Default: 0,1,2,3,4,5,6,7.
+                   Accepts comma-separated or space-separated IDs.
 ```
 
 Useful test aliases:
@@ -137,8 +141,9 @@ The single-device test is fixed to device 0.
 The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
 The multi-stream single-device test is also fixed to device 0 and uses up to 48
-streams. The 8-device thread and process tests use devices 0 through 7. In the
-8-thread test, each worker thread calls `aclInit`, treats
+streams. The multi-device thread and process tests use devices 0 through 7 by
+default, or the device list passed with `-d`. In the thread test, each worker
+thread calls `aclInit`, treats
 `ACL_ERROR_REPEAT_INITIALIZE` as a usable already-initialized state, selects its
 own device, and calls `aclFinalizeReference` after releasing its resources.
 
@@ -150,6 +155,8 @@ Examples:
 ./h2d_d2h_async_memcpy -t multi_stream -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all8_single_stream -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128 -d 1,2
+./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128 -d 1 2
 ./h2d_d2h_async_memcpy -t all -s 64K -n 1024 -i 128
 ```
 
