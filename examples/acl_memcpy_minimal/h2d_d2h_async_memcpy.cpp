@@ -480,6 +480,10 @@ void PrintTableHeader(const std::string& title, const Options& options)
     std::cout << title << "\n"
               << "warmup=" << kWarmupIterations << ", iterations=" << options.iterations
               << ", buffers_per_iteration=" << options.bufferCount;
+    if (options.testType == TestType::MultiStream ||
+        options.testType == TestType::All8Process) {
+        std::cout << ", streams=" << options.streamCount;
+    }
     if (options.testType == TestType::All8SingleStream ||
         options.testType == TestType::All8Process) {
         std::cout << ", devices=" << DeviceListLabel(options.devices);
@@ -1244,10 +1248,10 @@ void RunAllDeviceProcessChild(int deviceId, const Options& options, int startRea
     bool ok = true;
     bool aclInitialized = false;
     bool deviceSet = false;
-    aclrtStream stream = nullptr;
     aclrtEvent start = nullptr;
     aclrtEvent end = nullptr;
     CopyBuffers buffers;
+    std::vector<StreamTask> tasks;
     std::vector<double> submitUs(options.iterations, 0.0);
     std::vector<double> copyUs(options.iterations, 0.0);
 
@@ -1258,9 +1262,6 @@ void RunAllDeviceProcessChild(int deviceId, const Options& options, int startRea
         deviceSet = ok;
     }
     if (ok) {
-        ok = CHECK_ACL(aclrtCreateStream(&stream));
-    }
-    if (ok) {
         ok = CHECK_ACL(aclrtCreateEvent(&start));
     }
     if (ok) {
@@ -1268,6 +1269,9 @@ void RunAllDeviceProcessChild(int deviceId, const Options& options, int startRea
     }
     if (ok) {
         ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
+    }
+    if (ok) {
+        ok = BuildStreamTasks(buffers, options.streamCount, &tasks);
     }
 
     const char ready = ok ? 'R' : 'E';
@@ -1283,8 +1287,7 @@ void RunAllDeviceProcessChild(int deviceId, const Options& options, int startRea
 
         Timing timing;
         if (ok) {
-            ok = MeasureCopyOnce(buffers.device, buffers.hostSrc, options.ioSize,
-                                 ACL_MEMCPY_HOST_TO_DEVICE, stream, start, end, &timing);
+            ok = MeasureMultiStreamCopyOnce(tasks, options.ioSize, start, end, &timing);
         }
         if (ok && step >= kWarmupIterations) {
             const std::size_t iter = step - kWarmupIterations;
@@ -1296,15 +1299,13 @@ void RunAllDeviceProcessChild(int deviceId, const Options& options, int startRea
         WriteExact(barrierWriteFd, &done, sizeof(done));
     }
 
+    ok = DestroyStreamTasks(&tasks) && ok;
     ok = FreeBuffers(&buffers) && ok;
     if (end != nullptr) {
         ok = CHECK_ACL(aclrtDestroyEvent(end)) && ok;
     }
     if (start != nullptr) {
         ok = CHECK_ACL(aclrtDestroyEvent(start)) && ok;
-    }
-    if (stream != nullptr) {
-        ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
     }
     if (deviceSet) {
         ok = CHECK_ACL(aclrtResetDevice(deviceId)) && ok;
@@ -1508,9 +1509,12 @@ bool RunAllDeviceProcesses(const Options& options)
     const double avgCopyUs = Average(maxCopyUs);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync multi-process simultaneous H2D benchmark",
+    PrintTableHeader("AscendCL aclrtMemcpyAsync multi-process multi-stream simultaneous H2D benchmark",
                      options);
-    const std::string rowName = deviceCount == kAllDeviceCount ? "H2D_ALL8P" : "H2D_ALLP";
+    const std::size_t activeStreamCount = std::min(options.streamCount, options.bufferCount);
+    const std::string rowName =
+        (deviceCount == kAllDeviceCount ? "H2D_ALL8P_MS" : "H2D_ALLP_MS") +
+        std::to_string(activeStreamCount);
     PrintTableRow(rowName, options.ioSize, options.bufferCount * deviceCount,
                   avgSubmitUs, avgWaitUs, avgCopyUs);
     return true;
