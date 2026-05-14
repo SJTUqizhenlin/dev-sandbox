@@ -28,7 +28,7 @@ namespace {
 
 constexpr int kDeviceId = 0;
 constexpr int kAllDeviceCount = 8;
-constexpr std::size_t kMultiStreamCount = 4;
+constexpr std::size_t kDefaultMultiStreamCount = 4;
 constexpr int kWarmupIterations = 5;
 constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
@@ -57,6 +57,7 @@ struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
     std::size_t iterations = kDefaultMeasureIterations;
+    std::size_t streamCount = kDefaultMultiStreamCount;
     std::vector<int> devices = DefaultDevices();
     TestType testType = TestType::SingleStream;
     bool showHelp = false;
@@ -201,7 +202,7 @@ void PrintUsage(const char* prog)
 {
     std::cout << "Usage: " << (prog != nullptr ? prog : "h2d_async_memcpy")
               << " [-t <test_type>] [-s <io_size>] [-n <buffer_count>] [-i <iterations>]"
-              << " [-d <device_list>]\n"
+              << " [-m <stream_count>] [-d <device_list>]\n"
               << "\n"
               << "Options:\n"
               << "  -t <test_type>     Test to run. Default: "
@@ -214,6 +215,8 @@ void PrintUsage(const char* prog)
               << " Default: " << kDefaultBufferCount << "\n"
               << "  -i <iterations>    Number of measured iterations."
               << " Default: " << kDefaultMeasureIterations << "\n"
+              << "  -m <stream_count>  Number of streams for multi_stream."
+              << " Default: " << kDefaultMultiStreamCount << "\n"
               << "  -d <device_list>   Devices for all8_single_stream/all8_process."
               << " Use comma or space separated IDs. Default: "
               << DeviceListLabel(DefaultDevices()) << "\n"
@@ -362,6 +365,14 @@ bool ParseArgs(int argc, char const* argv[], Options* options)
         if (arg == "-i") {
             if (i + 1 >= argc || !ParseSize(argv[++i], &options->iterations)) {
                 std::cerr << "Invalid value for -i.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
+        if (arg == "-m" || arg == "--streams") {
+            if (i + 1 >= argc || !ParseSize(argv[++i], &options->streamCount)) {
+                std::cerr << "Invalid value for -m.\n";
                 PrintUsage(argv[0]);
                 return false;
             }
@@ -935,9 +946,13 @@ bool RunMultiStreamDirection(const Options& options, CopyBuffers* buffers)
     aclrtEvent start = nullptr;
     aclrtEvent end = nullptr;
     std::vector<StreamTask> tasks;
+    std::size_t activeStreamCount = 0;
     bool ok = true;
 
-    ok = BuildStreamTasks(*buffers, kMultiStreamCount, &tasks);
+    ok = BuildStreamTasks(*buffers, options.streamCount, &tasks);
+    if (ok) {
+        activeStreamCount = tasks.size();
+    }
     if (ok) {
         ok = CHECK_ACL(aclrtCreateEvent(&start));
     }
@@ -976,7 +991,8 @@ bool RunMultiStreamDirection(const Options& options, CopyBuffers* buffers)
     const double avgSubmitUs = submitUs / static_cast<double>(options.iterations);
     const double avgCopyUs = copyUs / static_cast<double>(options.iterations);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
-    PrintTableRow("H2D_MS4", options.ioSize, options.bufferCount, avgSubmitUs, avgWaitUs,
+    PrintTableRow("H2D_MS" + std::to_string(activeStreamCount), options.ioSize,
+                  options.bufferCount, avgSubmitUs, avgWaitUs,
                   avgCopyUs);
     return true;
 }
@@ -991,7 +1007,8 @@ bool RunSingleDeviceMultiStream(const Options& options)
         return false;
     }
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device 4-stream H2D benchmark",
+    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device " +
+                         std::to_string(options.streamCount) + "-stream H2D benchmark",
                      options);
     ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
     if (ok) {

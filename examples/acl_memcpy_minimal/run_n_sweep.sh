@@ -8,6 +8,7 @@ IO_SIZE="${IO_SIZE:-64K}"
 ITERS="${ITERS:-128}"
 TEST_TYPE="${TEST_TYPE:-single_stream}"
 DEVICES="${DEVICES:-}"
+STREAMS="${STREAMS:-}"
 LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs/n-sweep-${TEST_TYPE}-$(date +%Y%m%d-%H%M%S)}"
 
 if [[ ! -x "${BIN}" ]]; then
@@ -23,6 +24,9 @@ echo "[sweep] test_type=${TEST_TYPE}, io_size=${IO_SIZE}, iterations=${ITERS}"
 if [[ -n "${DEVICES}" ]]; then
     echo "[sweep] devices=${DEVICES}"
 fi
+if [[ -n "${STREAMS}" ]]; then
+    echo "[sweep] streams=${STREAMS}"
+fi
 echo "[sweep] logs=${LOG_DIR}"
 
 for n in 10 50 100 300 500 1000 2000 3000 5000 7500 10000; do
@@ -31,6 +35,9 @@ for n in 10 50 100 300 500 1000 2000 3000 5000 7500 10000; do
     cmd=("${BIN}" -t "${TEST_TYPE}" -s "${IO_SIZE}" -n "${n}" -i "${ITERS}")
     if [[ -n "${DEVICES}" ]]; then
         cmd+=(-d "${DEVICES}")
+    fi
+    if [[ -n "${STREAMS}" ]]; then
+        cmd+=(-m "${STREAMS}")
     fi
     echo "[run] ${cmd[*]}"
     "${cmd[@]}" 2>&1 | tee "${log_file}"

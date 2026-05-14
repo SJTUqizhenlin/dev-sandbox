@@ -7,18 +7,19 @@ into the repository CMake build.
 The program measures asynchronous Host-to-Device (H2D) copies for one requested
 buffer size and buffer count. Use `-t` to choose one test type: a single-device
 single-stream test on device 0, a single-device `aclrtMemcpyBatchAsync` test on
-device 0, a single-device 4-stream test on device 0, an 8-device simultaneous
-thread test where each device reads from its own host buffer into its own device
-buffer, or an 8-process test where each child process owns one device. `all`
-runs the in-process tests and does not include the separate 8-process test.
+device 0, a configurable multi-stream test on device 0, an 8-device
+simultaneous thread test where each device reads from its own host buffer into
+its own device buffer, or an 8-process test where each child process owns one
+device. `all` runs the in-process tests and does not include the separate
+8-process test.
 
 For each single-stream measurement iteration, the test submits a batch of async
 copies to one stream and then synchronizes once. The batch test submits the same
 copy list with one `aclrtMemcpyBatchAsync` call and uses one H2D attribute entry
-for all items. The 4-stream test splits the same buffer list across up to 4
-streams, records one total start event on stream 0, submits each stream's copy
-work, and joins the other streams back to stream 0 with finish events before
-recording the total end event. The
+for all items. The multi-stream test splits the same buffer list across up to
+the requested stream count, records one total start event on stream 0, submits
+each stream's copy work, and joins the other streams back to stream 0 with
+finish events before recording the total end event. The
 8-device thread test uses one host thread per device, each thread initializes
 AscendCL independently, and a CPU barrier aligns each iteration while avoiding
 cross-device event dependencies in the benchmark code.
@@ -86,8 +87,9 @@ Dir          Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(
 - `BW(MB/s)`: effective bandwidth computed from `Size * Count / Copy(us)`.
 
 For `H2D_BATCH`, `Count` is the requested `-n` buffer count submitted through
-one `aclrtMemcpyBatchAsync` call. For `H2D_MS4`, `Count` is still the requested
-`-n` buffer count; the buffers are divided across up to 4 streams. For
+one `aclrtMemcpyBatchAsync` call. For `H2D_MS<streams>`, `Count` is still the
+requested `-n` buffer count; the buffers are divided across up to the requested
+stream count. For
 `H2D_ALL8` and `H2D_ALL8P`, `Count` is `-n * 8` because all 8 devices copy their
 own `-n` buffers in the same measurement iteration.
 
@@ -124,6 +126,7 @@ Options:
 -s <io_size>       Bytes per buffer. Suffixes K/M/G are supported.
 -n <buffer_count>  Number of buffers copied per measurement iteration.
 -i <iterations>    Number of measured iterations. Default: 128.
+-m <stream_count>  Number of streams for multi_stream. Default: 4.
 -d <device_list>   Devices for all8_single_stream/all8_process. Default: 0,1,2,3,4,5,6,7.
                    Accepts comma-separated or space-separated IDs.
 ```
@@ -141,10 +144,10 @@ all8_proc, multi_process    -> all8_process
 The single-device test is fixed to device 0.
 The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
-The multi-stream single-device test is also fixed to device 0 and uses up to 4
-streams. The multi-device thread and process tests use devices 0 through 7 by
-default, or the device list passed with `-d`. In the thread test, each worker
-thread calls `aclInit`, treats
+The multi-stream single-device test is also fixed to device 0 and uses the
+stream count passed with `-m`; the default is 4 streams. The multi-device thread
+and process tests use devices 0 through 7 by default, or the device list passed
+with `-d`. In the thread test, each worker thread calls `aclInit`, treats
 `ACL_ERROR_REPEAT_INITIALIZE` as a usable already-initialized state, selects its
 own device, and calls `aclFinalizeReference` after releasing its resources.
 
@@ -154,6 +157,7 @@ Examples:
 ./h2d_d2h_async_memcpy -t single_stream -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t batch -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t multi_stream -s 64K -n 1024 -i 128
+./h2d_d2h_async_memcpy -t multi_stream -s 64K -n 1024 -i 128 -m 8
 ./h2d_d2h_async_memcpy -t all8_single_stream -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128
 ./h2d_d2h_async_memcpy -t all8_process -s 64K -n 1024 -i 128 -d 1,2
