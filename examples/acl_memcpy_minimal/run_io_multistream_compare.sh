@@ -37,7 +37,7 @@ extract_metrics() {
             if (row == "") {
                 exit 1
             }
-            printf "%s\t%s\t%s\t%s", count, submit, copy, bw
+            printf "%s\t%s\t%s\t%s\n", count, submit, copy, bw
         }
     ' "${log_file}"
 }
