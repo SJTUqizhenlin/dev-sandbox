@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${BIN:-${SCRIPT_DIR}/h2d_d2h_async_memcpy}"
 
-IO_SIZES="${IO_SIZES:-64K;37K;2K}"
+IO_SIZES="${IO_SIZES:-64K;37K;2K;256K;1024K}"
 BUFFER_COUNT="${BUFFER_COUNT:-10000}"
 STREAMS="${STREAMS:-4}"
 ITERS="${ITERS:-10}"

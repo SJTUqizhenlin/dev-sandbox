@@ -96,13 +96,13 @@ LOG_DIR=/tmp/h2d-scale ./run_multistream_scale_compare.sh
 ## Fixed IO Multi-Stream Compare
 
 `run_io_multistream_compare.sh` compares one selected device against all 8
-devices for three fixed IO sizes. It uses the same multi-process multi-stream
+devices for five fixed IO sizes. It uses the same multi-process multi-stream
 path for both rows so that the comparison isolates scale-out behavior.
 
 Default fixed parameters:
 
 ```text
-IO sizes: 64K, 37K, 2K
+IO sizes: 64K, 37K, 2K, 256K, 1024K
 -n 10000
 -m 4
 -i 10
@@ -123,6 +123,6 @@ Useful overrides:
 REPEATS=5 ./run_io_multistream_compare.sh
 SINGLE_DEVICE=2 ./run_io_multistream_compare.sh
 ALL_DEVICES=0,2,4,6 ./run_io_multistream_compare.sh
-IO_SIZES='64K;37K;2K;128K' ./run_io_multistream_compare.sh
+IO_SIZES='64K;37K;2K;128K;256K;1024K' ./run_io_multistream_compare.sh
 LOG_DIR=/tmp/h2d-io-compare ./run_io_multistream_compare.sh
 ```
