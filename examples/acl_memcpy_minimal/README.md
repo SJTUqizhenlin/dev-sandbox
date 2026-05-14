@@ -7,7 +7,7 @@ into the repository CMake build.
 The program measures asynchronous Host-to-Device (H2D) copies for one requested
 buffer size and buffer count. Use `-t` to choose one test type: a single-device
 single-stream test on device 0, a single-device `aclrtMemcpyBatchAsync` test on
-device 0, a single-device 48-stream test on device 0, an 8-device simultaneous
+device 0, a single-device 4-stream test on device 0, an 8-device simultaneous
 thread test where each device reads from its own host buffer into its own device
 buffer, or an 8-process test where each child process owns one device. `all`
 runs the in-process tests and does not include the separate 8-process test.
@@ -15,9 +15,10 @@ runs the in-process tests and does not include the separate 8-process test.
 For each single-stream measurement iteration, the test submits a batch of async
 copies to one stream and then synchronizes once. The batch test submits the same
 copy list with one `aclrtMemcpyBatchAsync` call and uses one H2D attribute entry
-for all items. The 48-stream test splits the same buffer list across up to 48
-streams, records one total start event, makes the other streams wait on that
-event, and records one total end event after all streams have finished. The
+for all items. The 4-stream test splits the same buffer list across up to 4
+streams, records one total start event on stream 0, submits each stream's copy
+work, and joins the other streams back to stream 0 with finish events before
+recording the total end event. The
 8-device thread test uses one host thread per device, each thread initializes
 AscendCL independently, and a CPU barrier aligns each iteration while avoiding
 cross-device event dependencies in the benchmark code.
@@ -39,8 +40,8 @@ The program follows this basic runtime flow:
 6. The large regions are sliced into `Count` fixed-size copy entries.
 7. `aclrtMemcpyAsync` submits several asynchronous memory copies to the stream,
    or `aclrtMemcpyBatchAsync` submits the whole copy list in one batch call.
-8. The multi-stream path uses `aclrtStreamWaitEvent` to align streams and join
-   them back to stream 0 for one total elapsed-time measurement.
+8. The multi-stream path uses `aclrtStreamWaitEvent` to join the nonzero streams
+   back to stream 0 for one total elapsed-time measurement.
 9. `aclrtSynchronizeStream` waits until the submitted copy has finished.
 10. `aclrtFree`, `aclrtFreeHost`, `aclrtDestroyStream`, `aclrtResetDevice`, and
    `aclFinalize` release resources.
@@ -85,8 +86,8 @@ Dir          Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(
 - `BW(MB/s)`: effective bandwidth computed from `Size * Count / Copy(us)`.
 
 For `H2D_BATCH`, `Count` is the requested `-n` buffer count submitted through
-one `aclrtMemcpyBatchAsync` call. For `H2D_MS48`, `Count` is still the requested
-`-n` buffer count; the buffers are divided across up to 48 streams. For
+one `aclrtMemcpyBatchAsync` call. For `H2D_MS4`, `Count` is still the requested
+`-n` buffer count; the buffers are divided across up to 4 streams. For
 `H2D_ALL8` and `H2D_ALL8P`, `Count` is `-n * 8` because all 8 devices copy their
 own `-n` buffers in the same measurement iteration.
 
@@ -132,7 +133,7 @@ Useful test aliases:
 ```text
 single, ss                  -> single_stream
 batch_async                 -> batch
-multi, ms, ms48             -> multi_stream
+multi, ms, ms4, ms48        -> multi_stream
 all8, multi_device          -> all8_single_stream
 all8_proc, multi_process    -> all8_process
 ```
@@ -140,7 +141,7 @@ all8_proc, multi_process    -> all8_process
 The single-device test is fixed to device 0.
 The batch single-device test is also fixed to device 0 and submits H2D work
 through `aclrtMemcpyBatchAsync`.
-The multi-stream single-device test is also fixed to device 0 and uses up to 48
+The multi-stream single-device test is also fixed to device 0 and uses up to 4
 streams. The multi-device thread and process tests use devices 0 through 7 by
 default, or the device list passed with `-d`. In the thread test, each worker
 thread calls `aclInit`, treats
@@ -177,12 +178,12 @@ Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/
 --------------------------------------------------------------------------------------------------------------------
 H2D_BATCH      64 KB    1024        20.000      1980.000      2000.000           0.020         1.953        32000.00
 
-AscendCL aclrtMemcpyAsync single-device 48-stream H2D benchmark
+AscendCL aclrtMemcpyAsync single-device 4-stream H2D benchmark
 warmup=5, iterations=128, buffers_per_iteration=1024
 
 Dir             Size   Count    Submit(us)      Wait(us)      Copy(us)   Submit/IO(us)   Copy/IO(us)        BW(MB/s)
 --------------------------------------------------------------------------------------------------------------------
-H2D_MS48       64 KB    1024       220.000       780.000      1000.000           0.215         0.977        64000.00
+H2D_MS4        64 KB    1024       220.000       780.000      1000.000           0.215         0.977        64000.00
 
 AscendCL aclrtMemcpyAsync 8-device simultaneous H2D benchmark
 warmup=5, iterations=128, buffers_per_iteration=1024

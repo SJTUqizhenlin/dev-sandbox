@@ -28,7 +28,7 @@ namespace {
 
 constexpr int kDeviceId = 0;
 constexpr int kAllDeviceCount = 8;
-constexpr std::size_t kMultiStreamCount = 48;
+constexpr std::size_t kMultiStreamCount = 4;
 constexpr int kWarmupIterations = 5;
 constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
@@ -180,7 +180,7 @@ bool ParseTestType(const std::string& text, TestType* type)
         return true;
     }
     if (name == "multi" || name == "multi_stream" || name == "multistream" ||
-        name == "ms" || name == "ms48") {
+        name == "ms" || name == "ms4" || name == "ms48") {
         *type = TestType::MultiStream;
         return true;
     }
@@ -889,11 +889,6 @@ bool MeasureMultiStreamCopyOnce(std::vector<StreamTask>& tasks, std::size_t size
     if (!CHECK_ACL(aclrtRecordEvent(start, tasks[0].stream))) {
         return false;
     }
-    for (std::size_t i = 1; i < tasks.size(); ++i) {
-        if (!CHECK_ACL(aclrtStreamWaitEvent(tasks[i].stream, start))) {
-            return false;
-        }
-    }
 
     auto submitBegin = std::chrono::steady_clock::now();
     for (auto& task : tasks) {
@@ -981,7 +976,7 @@ bool RunMultiStreamDirection(const Options& options, CopyBuffers* buffers)
     const double avgSubmitUs = submitUs / static_cast<double>(options.iterations);
     const double avgCopyUs = copyUs / static_cast<double>(options.iterations);
     const double avgWaitUs = avgCopyUs > avgSubmitUs ? avgCopyUs - avgSubmitUs : 0.0;
-    PrintTableRow("H2D_MS48", options.ioSize, options.bufferCount, avgSubmitUs, avgWaitUs,
+    PrintTableRow("H2D_MS4", options.ioSize, options.bufferCount, avgSubmitUs, avgWaitUs,
                   avgCopyUs);
     return true;
 }
@@ -996,7 +991,7 @@ bool RunSingleDeviceMultiStream(const Options& options)
         return false;
     }
 
-    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device 48-stream H2D benchmark",
+    PrintTableHeader("AscendCL aclrtMemcpyAsync single-device 4-stream H2D benchmark",
                      options);
     ok = AllocateBuffers(options.ioSize, options.bufferCount, &buffers);
     if (ok) {
