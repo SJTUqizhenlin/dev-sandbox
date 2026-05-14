@@ -70,7 +70,7 @@ Default fixed parameters:
 -s 32K
 -n 10000
 -m 4
--i 128
+-i 10
 ```
 
 Run:
