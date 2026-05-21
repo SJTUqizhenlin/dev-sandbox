@@ -26,6 +26,7 @@
 
 #include <cstring>
 #include <sys/mman.h>
+#include <vector>
 #include "copy_buffer.h"
 #include "error_handle_ascend.h"
 
@@ -90,6 +91,43 @@ public:
         }
     }
     std::string Name() const override { return "acl::device::" + std::to_string(device_); }
+};
+
+class FragmentedDeviceCopyBuffer : public CopyBuffer {
+public:
+    FragmentedDeviceCopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        fragments_.resize(number_);
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        for (auto& fragment : fragments_) {
+            ASCEND_ASSERT(aclrtMalloc(&fragment, size_, ACL_MEM_MALLOC_HUGE_FIRST));
+            ASCEND_ASSERT(aclrtMemset(fragment, size_, 'd', size_));
+        }
+        if (!fragments_.empty()) { addr_ = fragments_[0]; }
+    }
+
+    ~FragmentedDeviceCopyBuffer() override
+    {
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        for (auto& fragment : fragments_) {
+            if (fragment != nullptr) { ASCEND_ASSERT(aclrtFree(fragment)); }
+        }
+    }
+
+    void* At(size_t i) const override
+    {
+        ASSERT(i < fragments_.size());
+        return fragments_[i];
+    }
+
+    std::string Name() const override
+    {
+        return "acl::device_frag::" + std::to_string(device_);
+    }
+
+private:
+    std::vector<void*> fragments_;
 };
 
 #endif  // COPY_BUFFER_ASCEND_H

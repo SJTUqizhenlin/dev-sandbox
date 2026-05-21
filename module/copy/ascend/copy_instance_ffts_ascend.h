@@ -21,34 +21,41 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
-#ifndef COPY_BUFFER_H
-#define COPY_BUFFER_H
+#ifndef COPY_INSTANCE_FFTS_ASCEND_H
+#define COPY_INSTANCE_FFTS_ASCEND_H
 
-#include <cstddef>
-#include <string>
+#include <vector>
+#include "copy_instance_ascend.h"
+#include "ffts_d2d_dispatcher_ascend.h"
 
-class CopyBuffer {
+class D2DFFTSCopyInstance : public AscendCopyInstanceBase {
 protected:
-    size_t device_;
-    size_t size_;
-    size_t number_;
-    void* addr_;
+    void CopyInternal(const AscendStreamContext& ctx) override
+    {
+        std::vector<AscendD2DCopySpec> copies;
+        copies.reserve(ctx.src.size());
+        for (size_t i = 0; i < ctx.src.size(); ++i) {
+            copies.push_back({ctx.dst[i], ctx.src[i], ctx.size});
+        }
+
+        FftsD2DDispatcher dispatcher;
+        const auto readyCount = dispatcher.BuildCopies(copies);
+        ASSERT(readyCount > 0);
+        dispatcher.Launch(ctx.stream, readyCount);
+    }
+
+    void SynchronizeInternal(const AscendStreamContext& ctx) override
+    {
+        ASCEND_ASSERT(aclrtSynchronizeStream(ctx.stream));
+    }
 
 public:
-    CopyBuffer(size_t device, size_t size, size_t number)
-        : device_{device}, size_{size}, number_{number}, addr_{nullptr}
+    D2DFFTSCopyInstance(size_t iterations, bool affinitySrc)
+        : AscendCopyInstanceBase(iterations, affinitySrc)
     {
     }
-    virtual ~CopyBuffer() = default;
-    virtual std::string Name() const = 0;
-    virtual void* At(size_t i) const
-    {
-        return static_cast<void*>(static_cast<char*>(addr_) + i * size_);
-    }
-    const size_t& Device() const { return device_; }
-    const size_t& Size() const { return size_; }
-    const size_t& Number() const { return number_; }
-    void* operator[](size_t i) const { return At(i); }
+
+    std::string Name() const override { return "FFTS"; }
 };
 
-#endif  // COPY_BUFFER_H
+#endif  // COPY_INSTANCE_FFTS_ASCEND_H

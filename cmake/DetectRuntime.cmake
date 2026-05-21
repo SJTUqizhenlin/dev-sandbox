@@ -79,9 +79,40 @@ function(detect_runtime_backend)
         )
 
         if(_ASCEND_INCLUDE_DIR AND _ASCEND_LIBRARY)
+            find_library(_ASCEND_RUNTIME_LIBRARY runtime
+                PATHS
+                    "${_ASCEND_ROOT}/lib64"
+                    "${_ASCEND_ROOT}/lib"
+                    "${_ASCEND_ROOT}/runtime/lib64"
+                    "${_ASCEND_ROOT}/runtime/lib"
+                    "${_ASCEND_ROOT}/aarch64-linux/lib64"
+                    "${_ASCEND_ROOT}/aarch64-linux/lib"
+                    "/usr/local/Ascend/cann/aarch64-linux/lib64"
+                    "/usr/local/Ascend/cann/aarch64-linux/lib"
+                NO_DEFAULT_PATH
+            )
+            find_path(_ASCEND_FFTS_INCLUDE_DIR
+                NAMES runtime/rt_ffts_plus.h rt_external_ffts.h
+                PATHS
+                    "${_ASCEND_ROOT}/include"
+                    "${_ASCEND_ROOT}/pkg_inc"
+                    "${_ASCEND_ROOT}/pkg_inc/runtime"
+                    "${_ASCEND_ROOT}/aarch64-linux/pkg_inc"
+                    "${_ASCEND_ROOT}/aarch64-linux/pkg_inc/runtime"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc/runtime"
+                NO_DEFAULT_PATH
+            )
+
             message(STATUS "Found Ascend runtime: ${_ASCEND_ROOT}")
             message(STATUS "  Include: ${_ASCEND_INCLUDE_DIR}")
             message(STATUS "  Library: ${_ASCEND_LIBRARY}")
+            if(_ASCEND_RUNTIME_LIBRARY AND _ASCEND_FFTS_INCLUDE_DIR)
+                message(STATUS "  FFTS Include: ${_ASCEND_FFTS_INCLUDE_DIR}")
+                message(STATUS "  Runtime Library: ${_ASCEND_RUNTIME_LIBRARY}")
+            else()
+                message(STATUS "  FFTS support: disabled (missing FFTS header or libruntime)")
+            endif()
 
             # Create imported target
             add_library(Ascend::Runtime INTERFACE IMPORTED GLOBAL)
@@ -92,6 +123,11 @@ function(detect_runtime_backend)
             set(RUNTIME_BACKEND "Ascend" PARENT_SCOPE)
             set(ASCEND_FOUND TRUE PARENT_SCOPE)
             set(ASCEND_ROOT "${_ASCEND_ROOT}" PARENT_SCOPE)
+            if(_ASCEND_RUNTIME_LIBRARY AND _ASCEND_FFTS_INCLUDE_DIR)
+                set(HAVE_ASCEND_FFTS_RUNTIME TRUE PARENT_SCOPE)
+                set(ASCEND_RUNTIME_LIBRARY "${_ASCEND_RUNTIME_LIBRARY}" PARENT_SCOPE)
+                set(ASCEND_FFTS_INCLUDE_DIR "${_ASCEND_FFTS_INCLUDE_DIR}" PARENT_SCOPE)
+            endif()
 
             return()
         endif()
