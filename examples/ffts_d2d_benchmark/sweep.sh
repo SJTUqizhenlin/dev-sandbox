@@ -51,16 +51,19 @@ BUFFER_COUNT=${BUFFER_COUNT:-1024}
 ITERATIONS=${ITERATIONS:-128}
 IO_SIZES=${IO_SIZES:-2K,8K,37K,64K,128K,256K,512K,1024K}
 
+STREAM_COUNT=${STREAM_COUNT:-4}
+
 IFS=',' read -r -a SIZE_LIST <<< "${IO_SIZES}"
 
 for io_size in "${SIZE_LIST[@]}"; do
-  echo "=== io_size=${io_size} buffer_count=${BUFFER_COUNT} iterations=${ITERATIONS} ==="
+  echo "=== io_size=${io_size} buffer_count=${BUFFER_COUNT} iterations=${ITERATIONS} streams=${STREAM_COUNT} ==="
   ./build/ffts_vs_acl_d2d_benchmark \
     -d "${DEVICE_ID}" \
     -t all \
     -p both \
     -s "${io_size}" \
     -n "${BUFFER_COUNT}" \
-    -i "${ITERATIONS}"
+    -i "${ITERATIONS}" \
+    -m "${STREAM_COUNT}"
   echo ""
 done
