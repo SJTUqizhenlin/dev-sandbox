@@ -213,6 +213,24 @@ bool ParseCopyPath(const std::string &text, CopyPath *path)
     return false;
 }
 
+bool ParseDeviceId(const std::string &text, uint32_t *deviceId)
+{
+    if (text.empty() || deviceId == nullptr) {
+        return false;
+    }
+    try {
+        std::size_t pos = 0;
+        const unsigned long long parsed = std::stoull(text, &pos, 10);
+        if (pos != text.size() || parsed > std::numeric_limits<uint32_t>::max()) {
+            return false;
+        }
+        *deviceId = static_cast<uint32_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 bool ParseSize(const std::string &text, std::size_t *value)
 {
     if (text.empty() || value == nullptr) {
@@ -237,10 +255,7 @@ bool ParseSize(const std::string &text, std::size_t *value)
     try {
         std::size_t pos = 0;
         const std::size_t parsed = std::stoull(number, &pos, 10);
-        if (pos != number.size()) {
-            return false;
-        }
-        if (parsed == 0) {
+        if (pos != number.size() || parsed == 0) {
             return false;
         }
         *value = parsed * multiplier;
@@ -323,18 +338,11 @@ bool ParseArgs(int argc, char const *argv[], Options *options)
             continue;
         }
         if (arg == "-d") {
-            if (i + 1 >= argc) {
+            if (i + 1 >= argc || !ParseDeviceId(argv[++i], &options->deviceId)) {
                 std::cerr << "Invalid value for -d.\n";
                 PrintUsage(argv[0]);
                 return false;
             }
-            std::size_t parsed = 0;
-            if (!ParseSize(argv[++i], &parsed)) {
-                std::cerr << "Invalid value for -d.\n";
-                PrintUsage(argv[0]);
-                return false;
-            }
-            options->deviceId = static_cast<uint32_t>(parsed);
             continue;
         }
         std::cerr << "Unknown option: " << arg << "\n";
