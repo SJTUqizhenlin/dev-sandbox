@@ -6,7 +6,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 fi
 
 if [[ ! -x ./build/ffts_vs_acl_d2d_benchmark ]]; then
-  echo "Missing ./build/ffts_vs_acl_d2d_benchmark. Run bash scripts/build_ffts_vs_acl_d2d_benchmark.sh first." >&2
+  echo "Missing ./build/ffts_vs_acl_d2d_benchmark. Run bash build.sh first." >&2
   exit 1
 fi
 

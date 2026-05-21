@@ -171,7 +171,7 @@ echo "CXX=${CXX}"
 
 "${CXX}" -std=c++17 -O2 -Wall -Wextra \
   "${INCLUDE_FLAGS[@]}" \
-  src/ffts_vs_acl_d2d_benchmark.cpp \
+  ffts_vs_acl_d2d_benchmark.cpp \
   "${LIB_FLAGS[@]}" "${LINK_LIBS[@]}" \
   -Wl,-rpath,"${RPATH}" \
   -o build/ffts_vs_acl_d2d_benchmark
