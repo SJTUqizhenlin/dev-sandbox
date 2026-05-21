@@ -30,6 +30,8 @@ constexpr int kWarmupIterations = 5;
 constexpr int kDefaultMeasureIterations = 128;
 constexpr std::size_t kDefaultIoSize = 64 * 1024;
 constexpr std::size_t kDefaultBufferCount = 1024;
+constexpr std::size_t kDefaultStreamCount = 1;
+constexpr std::size_t kMaxStreamCount = 8;
 
 static_assert(sizeof(rtFftsPlusComCtx_t) == 128, "rtFftsPlusComCtx_t must be 128 bytes");
 static_assert(sizeof(rtFftsPlusSdmaCtx_t) == 128, "rtFftsPlusSdmaCtx_t must be 128 bytes");
@@ -53,6 +55,7 @@ struct Options {
     std::size_t ioSize = kDefaultIoSize;
     std::size_t bufferCount = kDefaultBufferCount;
     std::size_t iterations = kDefaultMeasureIterations;
+    std::size_t streamCount = kDefaultStreamCount;
 };
 
 struct CopySpec {
@@ -265,25 +268,45 @@ bool ParseSize(const std::string &text, std::size_t *value)
     }
 }
 
+bool ParseStreamCount(const std::string &text, std::size_t *value)
+{
+    if (text.empty() || value == nullptr) {
+        return false;
+    }
+    try {
+        std::size_t pos = 0;
+        const std::size_t parsed = std::stoull(text, &pos, 10);
+        if (pos != text.size() || parsed == 0 || parsed > kMaxStreamCount) {
+            return false;
+        }
+        *value = parsed;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void PrintUsage(const char *prog)
 {
     std::cout << "Usage: " << (prog != nullptr ? prog : "ffts_vs_acl_d2d_benchmark")
               << " [-t <test_type>] [-p <copy_path>] [-s <io_size>] [-n <buffer_count>]"
-              << " [-i <iterations>] [-d <device_id>] [-h]\n"
+              << " [-i <iterations>] [-m <stream_count>] [-d <device_id>] [-h]\n"
               << "\n"
               << "Options:\n"
-              << "  -t <test_type>   Test type: all, merge, split. Default: "
+              << "  -t <test_type>    Test type: all, merge, split. Default: "
               << TestTypeName(TestType::All) << "\n"
-              << "  -p <copy_path>   Copy path: acl, ffts, both. Default: "
+              << "  -p <copy_path>    Copy path: acl, ffts, both. Default: "
               << CopyPathName(CopyPath::Both) << "\n"
-              << "  -s <io_size>     Bytes per buffer (suffixes K/M/G). Default: "
+              << "  -s <io_size>      Bytes per buffer (suffixes K/M/G). Default: "
               << SizeLabel(kDefaultIoSize) << "\n"
               << "  -n <buffer_count> Number of buffers per iteration. Default: "
               << kDefaultBufferCount << "\n"
-              << "  -i <iterations>  Number of measured iterations. Default: "
+              << "  -i <iterations>   Number of measured iterations. Default: "
               << kDefaultMeasureIterations << "\n"
-              << "  -d <device_id>   Device ID. Default: 0\n"
-              << "  -h               Show this help message.\n";
+              << "  -m <stream_count> Number of ACL streams (1-" << kMaxStreamCount << "). Default: "
+              << kDefaultStreamCount << "\n"
+              << "  -d <device_id>    Device ID. Default: 0\n"
+              << "  -h                Show this help message.\n";
 }
 
 bool ParseArgs(int argc, char const *argv[], Options *options)
@@ -340,6 +363,14 @@ bool ParseArgs(int argc, char const *argv[], Options *options)
         if (arg == "-d") {
             if (i + 1 >= argc || !ParseDeviceId(argv[++i], &options->deviceId)) {
                 std::cerr << "Invalid value for -d.\n";
+                PrintUsage(argv[0]);
+                return false;
+            }
+            continue;
+        }
+        if (arg == "-m") {
+            if (i + 1 >= argc || !ParseStreamCount(argv[++i], &options->streamCount)) {
+                std::cerr << "Invalid value for -m (must be 1-" << kMaxStreamCount << ").\n";
                 PrintUsage(argv[0]);
                 return false;
             }
@@ -771,11 +802,12 @@ private:
     std::vector<CopySpec> copies_;
 };
 
-static bool SubmitAclCopies(const std::vector<CopySpec> &copies, aclrtStream stream)
+static bool SubmitAclCopies(const std::vector<CopySpec> &copies, const std::vector<aclrtStream> &streams)
 {
-    for (const auto &copy : copies) {
-        if (!CHECK_ACL(aclrtMemcpyAsync(copy.dst, copy.size, copy.src, copy.size,
-                                         ACL_MEMCPY_DEVICE_TO_DEVICE, stream))) {
+    for (size_t i = 0; i < copies.size(); ++i) {
+        size_t streamIdx = i % streams.size();
+        if (!CHECK_ACL(aclrtMemcpyAsync(copies[i].dst, copies[i].size, copies[i].src, copies[i].size,
+                                         ACL_MEMCPY_DEVICE_TO_DEVICE, streams[streamIdx]))) {
             return false;
         }
     }
@@ -783,7 +815,9 @@ static bool SubmitAclCopies(const std::vector<CopySpec> &copies, aclrtStream str
 }
 
 bool MeasureCopyOnce(const std::vector<CopySpec> &copies, const std::string &path,
-                     aclrtStream stream, aclrtEvent startEvent, aclrtEvent stopEvent,
+                     const std::vector<aclrtStream> &streams,
+                     aclrtEvent startEvent, aclrtEvent stopEvent,
+                     const std::vector<aclrtEvent> &syncEvents,
                      Timing *timing)
 {
     if (timing == nullptr) {
@@ -805,26 +839,37 @@ bool MeasureCopyOnce(const std::vector<CopySpec> &copies, const std::string &pat
         }
     }
 
-    if (!CHECK_ACL(aclrtRecordEvent(startEvent, stream))) {
+    if (!CHECK_ACL(aclrtRecordEvent(startEvent, streams[0]))) {
         return false;
     }
 
     auto submitBegin = std::chrono::steady_clock::now();
     if (path == "acl") {
-        if (!SubmitAclCopies(copies, stream)) {
+        if (!SubmitAclCopies(copies, streams)) {
             return false;
         }
     } else {
-        if (!dispatcher.Launch(stream, readyCount)) {
+        if (!dispatcher.Launch(streams[0], readyCount)) {
             return false;
         }
     }
     auto submitEnd = std::chrono::steady_clock::now();
 
-    if (!CHECK_ACL(aclrtRecordEvent(stopEvent, stream))) {
+    if (path == "acl" && streams.size() > 1) {
+        for (size_t s = 1; s < streams.size(); ++s) {
+            if (!CHECK_ACL(aclrtRecordEvent(syncEvents[s - 1], streams[s]))) {
+                return false;
+            }
+            if (!CHECK_ACL(aclrtStreamWaitEvent(streams[0], syncEvents[s - 1]))) {
+                return false;
+            }
+        }
+    }
+
+    if (!CHECK_ACL(aclrtRecordEvent(stopEvent, streams[0]))) {
         return false;
     }
-    if (!CHECK_ACL(aclrtSynchronizeStream(stream))) {
+    if (!CHECK_ACL(aclrtSynchronizeStream(streams[0]))) {
         return false;
     }
 
@@ -840,7 +885,7 @@ bool MeasureCopyOnce(const std::vector<CopySpec> &copies, const std::string &pat
 }
 
 bool RunMeasuredPath(const std::vector<CopySpec> &copies, const std::string &path,
-                    aclrtStream stream, size_t iterations, Measurements *out)
+                    const std::vector<aclrtStream> &streams, size_t iterations, Measurements *out)
 {
     if (out == nullptr || copies.empty()) {
         return false;
@@ -856,10 +901,25 @@ bool RunMeasuredPath(const std::vector<CopySpec> &copies, const std::string &pat
         return false;
     }
 
+    std::vector<aclrtEvent> syncEvents;
+    if (path == "acl" && streams.size() > 1) {
+        syncEvents.resize(streams.size() - 1);
+        for (size_t s = 0; s < syncEvents.size(); ++s) {
+            if (!CHECK_ACL(aclrtCreateEvent(&syncEvents[s]))) {
+                for (size_t j = 0; j < s; ++j) {
+                    aclrtDestroyEvent(syncEvents[j]);
+                }
+                aclrtDestroyEvent(stopEvent);
+                aclrtDestroyEvent(startEvent);
+                return false;
+            }
+        }
+    }
+
     bool ok = true;
     for (int i = 0; i < kWarmupIterations; ++i) {
         Timing timing;
-        if (!MeasureCopyOnce(copies, path, stream, startEvent, stopEvent, &timing)) {
+        if (!MeasureCopyOnce(copies, path, streams, startEvent, stopEvent, syncEvents, &timing)) {
             ok = false;
             break;
         }
@@ -871,7 +931,7 @@ bool RunMeasuredPath(const std::vector<CopySpec> &copies, const std::string &pat
     if (ok) {
         for (size_t i = 0; i < iterations; ++i) {
             Timing timing;
-            if (!MeasureCopyOnce(copies, path, stream, startEvent, stopEvent, &timing)) {
+            if (!MeasureCopyOnce(copies, path, streams, startEvent, stopEvent, syncEvents, &timing)) {
                 ok = false;
                 break;
             }
@@ -881,11 +941,16 @@ bool RunMeasuredPath(const std::vector<CopySpec> &copies, const std::string &pat
         }
     }
 
-    if (startEvent != nullptr) {
-        ok = CHECK_ACL(aclrtDestroyEvent(startEvent)) && ok;
+    for (auto &evt : syncEvents) {
+        if (evt != nullptr) {
+            ok = CHECK_ACL(aclrtDestroyEvent(evt)) && ok;
+        }
     }
     if (stopEvent != nullptr) {
         ok = CHECK_ACL(aclrtDestroyEvent(stopEvent)) && ok;
+    }
+    if (startEvent != nullptr) {
+        ok = CHECK_ACL(aclrtDestroyEvent(startEvent)) && ok;
     }
 
     if (!ok) {
@@ -906,14 +971,14 @@ bool RunMeasuredPath(const std::vector<CopySpec> &copies, const std::string &pat
 void PrintTableHeader(const std::string &title)
 {
     std::cout << title << "\n\n"
-              << std::left << std::setw(10) << "Dir" << std::setw(6) << "Path"
+              << std::left << std::setw(10) << "Dir" << std::setw(10) << "Path"
               << std::right << std::setw(12) << "Size" << std::setw(8) << "Count"
               << std::setw(14) << "Build(us)" << std::setw(14) << "Submit(us)"
               << std::setw(14) << "Copy(us)"
               << std::setw(16) << "Build/IO(us)" << std::setw(16) << "Submit/IO(us)"
               << std::setw(14) << "Copy/IO(us)" << std::setw(16) << "BW(MB/s)"
               << std::setw(6) << "Pass" << "\n";
-    std::cout << std::string(136, '-') << "\n";
+    std::cout << std::string(140, '-') << "\n";
 }
 
 void PrintTableRow(const std::string &direction, const std::string &path,
@@ -925,7 +990,7 @@ void PrintTableRow(const std::string &direction, const std::string &path,
     const double submitPerIoUs = avgSubmitUs / countAsDouble;
     const double copyPerIoUs = avgCopyUs / countAsDouble;
 
-    std::cout << std::left << std::setw(10) << direction << std::setw(6) << path
+    std::cout << std::left << std::setw(10) << direction << std::setw(10) << path
               << std::right << std::setw(12) << SizeLabel(ioSize) << std::setw(8) << count
               << std::fixed << std::setprecision(3)
               << std::setw(14) << avgBuildUs << std::setw(14) << avgSubmitUs
@@ -938,20 +1003,25 @@ void PrintTableRow(const std::string &direction, const std::string &path,
 
 template <typename CaseT>
 bool RunOnePath(const std::string &direction, const std::string &path,
-                CaseT *testCase, aclrtStream stream, const Options &opt)
+                CaseT *testCase, const std::vector<aclrtStream> &streams, const Options &opt)
 {
     if (!testCase->ResetOutput()) {
         return false;
     }
 
     Measurements measurements;
-    bool runOk = RunMeasuredPath(testCase->Copies(), path, stream, opt.iterations, &measurements);
+    bool runOk = RunMeasuredPath(testCase->Copies(), path, streams, opt.iterations, &measurements);
     bool validateOk = false;
     if (runOk) {
         validateOk = testCase->Validate();
     }
 
-    PrintTableRow(direction, path, opt.ioSize, opt.bufferCount, testCase->TotalBytes(),
+    std::string displayName = path;
+    if (path == "acl" && opt.streamCount > 1) {
+        displayName = "acl(" + std::to_string(opt.streamCount) + "s)";
+    }
+
+    PrintTableRow(direction, displayName, opt.ioSize, opt.bufferCount, testCase->TotalBytes(),
                   measurements.buildUs.empty() ? 0.0 : measurements.buildUs[0],
                   measurements.submitUs.empty() ? 0.0 : measurements.submitUs[0],
                   measurements.copyUs.empty() ? 0.0 : measurements.copyUs[0],
@@ -970,7 +1040,7 @@ bool ShouldRun(TestType selected, TestType value)
     return selected == TestType::All || selected == value;
 }
 
-bool RunMergeCase(aclrtStream stream, const Options &opt)
+bool RunMergeCase(const std::vector<aclrtStream> &streams, const Options &opt)
 {
     MergeCase testCase;
     if (!testCase.Init(opt.bufferCount, opt.ioSize)) {
@@ -978,15 +1048,15 @@ bool RunMergeCase(aclrtStream stream, const Options &opt)
     }
     bool ok = true;
     if (ShouldRun(opt.copyPath, CopyPath::Acl)) {
-        ok = RunOnePath("merge", "acl", &testCase, stream, opt) && ok;
+        ok = RunOnePath("merge", "acl", &testCase, streams, opt) && ok;
     }
     if (ShouldRun(opt.copyPath, CopyPath::Ffts)) {
-        ok = RunOnePath("merge", "ffts", &testCase, stream, opt) && ok;
+        ok = RunOnePath("merge", "ffts", &testCase, streams, opt) && ok;
     }
     return ok;
 }
 
-bool RunSplitCase(aclrtStream stream, const Options &opt)
+bool RunSplitCase(const std::vector<aclrtStream> &streams, const Options &opt)
 {
     SplitCase testCase;
     if (!testCase.Init(opt.bufferCount, opt.ioSize)) {
@@ -994,10 +1064,10 @@ bool RunSplitCase(aclrtStream stream, const Options &opt)
     }
     bool ok = true;
     if (ShouldRun(opt.copyPath, CopyPath::Acl)) {
-        ok = RunOnePath("split", "acl", &testCase, stream, opt) && ok;
+        ok = RunOnePath("split", "acl", &testCase, streams, opt) && ok;
     }
     if (ShouldRun(opt.copyPath, CopyPath::Ffts)) {
-        ok = RunOnePath("split", "ffts", &testCase, stream, opt) && ok;
+        ok = RunOnePath("split", "ffts", &testCase, streams, opt) && ok;
     }
     return ok;
 }
@@ -1018,7 +1088,7 @@ int main(int argc, char const *argv[])
 
     bool ok = true;
     bool deviceSet = false;
-    aclrtStream stream = nullptr;
+    std::vector<aclrtStream> streams(options.streamCount, nullptr);
 
     if (!CHECK_ACL(aclrtSetDevice(options.deviceId))) {
         aclFinalize();
@@ -1026,27 +1096,33 @@ int main(int argc, char const *argv[])
     }
     deviceSet = true;
 
-    if (!CHECK_ACL(aclrtCreateStream(&stream))) {
-        ok = false;
+    for (size_t s = 0; s < streams.size(); ++s) {
+        if (!CHECK_ACL(aclrtCreateStream(&streams[s]))) {
+            ok = false;
+            break;
+        }
     }
 
     if (ok) {
         std::string title = "FFTS vs ACL D2D benchmark (device=" +
-                            std::to_string(options.deviceId) + ", warmup=" +
+                            std::to_string(options.deviceId) + ", streams=" +
+                            std::to_string(options.streamCount) + ", warmup=" +
                             std::to_string(kWarmupIterations) + ", iterations=" +
                             std::to_string(options.iterations) + ")";
         PrintTableHeader(title);
 
         if (ShouldRun(options.testType, TestType::Merge)) {
-            ok = RunMergeCase(stream, options) && ok;
+            ok = RunMergeCase(streams, options) && ok;
         }
         if (ShouldRun(options.testType, TestType::Split)) {
-            ok = RunSplitCase(stream, options) && ok;
+            ok = RunSplitCase(streams, options) && ok;
         }
     }
 
-    if (stream != nullptr) {
-        ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
+    for (auto &stream : streams) {
+        if (stream != nullptr) {
+            ok = CHECK_ACL(aclrtDestroyStream(stream)) && ok;
+        }
     }
     if (deviceSet) {
         ok = CHECK_ACL(aclrtResetDevice(options.deviceId)) && ok;
