@@ -34,16 +34,20 @@ cmake --build build -j
 
 **编译目标**：
 - **CUDA**: 检测成功后编译 CUDA 内核（`*.cu`）
+- **GDR**: CUDA 后端下检测到 `libibverbs` 时，额外编译 GDR 拷贝测试实现
 - **Ascend**: 检测成功后编译 Ascend 实现
 - **模拟模式**: 无 GPU 时编译纯 CPU 模拟版本
 
 相关源文件位于 `module/*/cuda`、`module/*/ascend`、`module/*/simu` 子目录。
+GDR 实现位于 `module/copy/cuda/gdr`，复用 `copy` 的公共基类体系，并注册到 `copy`
+主程序中。
 
 ## 模块结构
 
 - `cmake/`: CMake 模块（`DetectRuntime.cmake` 运行时检测）
 - `module/aio`: 异步 I/O 性能测试工具
 - `module/copy`: 设备间内存拷贝性能测试
+- `module/copy/cuda/gdr`: CUDA GDR/RDMA 拷贝测试实现
 - `module/logger`: 日志库
 - `module/trans`: 数据传输性能测试
 - `vendor/`: 第三方依赖（通过 FetchContent 下载）
