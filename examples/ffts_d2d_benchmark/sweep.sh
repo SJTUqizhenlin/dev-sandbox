@@ -57,7 +57,7 @@ for io_size in "${SIZE_LIST[@]}"; do
   echo "=== io_size=${io_size} buffer_count=${BUFFER_COUNT} iterations=${ITERATIONS} ==="
   ./build/ffts_vs_acl_d2d_benchmark \
     -d "${DEVICE_ID}" \
-    -t both \
+    -t all \
     -p both \
     -s "${io_size}" \
     -n "${BUFFER_COUNT}" \
