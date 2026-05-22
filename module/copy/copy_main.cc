@@ -29,11 +29,7 @@
 
 struct ArgsParser {
     std::unordered_set<std::string> names;
-    CopyCase::Context ctx{.size = 512ull * 1024ull * 1024ull,
-                          .num = 8,
-                          .iter = 128,
-                          .nDevice = 8,
-                          .streamCount = 1};
+    CopyCase::Context ctx{.size = 512ull * 1024ull * 1024ull, .num = 8, .iter = 128, .nDevice = 8};
 
     static void Help(std::string_view proc)
     {
@@ -44,7 +40,6 @@ struct ArgsParser {
         fmt::println("  -n <count>       Data number (default: 8)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
-        fmt::println("  -m <count>       Number of streams for supported cases (default: 1)");
     }
     static std::size_t ParseUnsigned(std::string_view text, std::string_view errorMessage)
     {
@@ -89,12 +84,6 @@ struct ArgsParser {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {
                 ctx.nDevice = ParseUnsigned(argv[++i], "Invalid device count.");
-            } else if (arg == "-m" && i + 1 < argc) {
-                ctx.streamCount = ParseUnsigned(argv[++i], "Invalid stream count.");
-                if (ctx.streamCount == 0) {
-                    fmt::println("Stream count must be greater than 0.");
-                    std::exit(EXIT_FAILURE);
-                }
             } else {
                 Help(argv[0]);
                 std::exit(EXIT_FAILURE);

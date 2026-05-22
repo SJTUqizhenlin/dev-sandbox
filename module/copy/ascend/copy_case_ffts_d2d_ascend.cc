@@ -84,20 +84,6 @@ bool ValidatePatternedBuffer(const CopyBuffer& buffer)
     return true;
 }
 
-void RunD2DCEPath(CopyResult* result, const CopyBuffer& srcBuffer, const CopyBuffer& dstBuffer,
-                  const CopyCase::Context& ctx)
-{
-    ResetBuffer(dstBuffer);
-    if (ctx.streamCount > 1) {
-        D2DCEMultiStreamCopyInstance instance{ctx.iter, false, ctx.streamCount};
-        result->Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-    } else {
-        D2DCECopyInstance instance{ctx.iter, false};
-        result->Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-    }
-    ASSERT(ValidatePatternedBuffer(dstBuffer));
-}
-
 void RunD2DFFTSPath(CopyResult* result, const CopyBuffer& srcBuffer, const CopyBuffer& dstBuffer,
                     const CopyCase::Context& ctx)
 {
@@ -109,8 +95,8 @@ void RunD2DFFTSPath(CopyResult* result, const CopyBuffer& srcBuffer, const CopyB
 
 }  // namespace
 
-DEFINE_COPY_CASE(AscendD2DMergeFftsVsAclCase, "ascend_d2d_merge_ffts_vs_acl",
-                 "merge fragmented device buffers into one device buffer with ce and ffts", ctx)
+DEFINE_COPY_CASE(AscendD2DMergeFftsCase, "ascend_d2d_merge_ffts",
+                 "merge fragmented device buffers into one device buffer with ffts", ctx)
 {
     CopyResult result;
     for (size_t device = 0; device < ctx.nDevice; device++) {
@@ -118,14 +104,13 @@ DEFINE_COPY_CASE(AscendD2DMergeFftsVsAclCase, "ascend_d2d_merge_ffts_vs_acl",
         DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializePatternedBuffer(srcBuffer);
 
-        RunD2DCEPath(&result, srcBuffer, dstBuffer, ctx);
         RunD2DFFTSPath(&result, srcBuffer, dstBuffer, ctx);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE(AscendD2DSplitFftsVsAclCase, "ascend_d2d_split_ffts_vs_acl",
-                 "split one device buffer into fragmented device buffers with ce and ffts", ctx)
+DEFINE_COPY_CASE(AscendD2DSplitFftsCase, "ascend_d2d_split_ffts",
+                 "split one device buffer into fragmented device buffers with ffts", ctx)
 {
     CopyResult result;
     for (size_t device = 0; device < ctx.nDevice; device++) {
@@ -133,7 +118,6 @@ DEFINE_COPY_CASE(AscendD2DSplitFftsVsAclCase, "ascend_d2d_split_ffts_vs_acl",
         FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializePatternedBuffer(srcBuffer);
 
-        RunD2DCEPath(&result, srcBuffer, dstBuffer, ctx);
         RunD2DFFTSPath(&result, srcBuffer, dstBuffer, ctx);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());

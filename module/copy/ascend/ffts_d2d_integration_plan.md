@@ -69,7 +69,6 @@ Ascend 后端已有能力：
 - 尚未在 CMake 中显式接入 FFTS Plus 相关 include 路径。
 - 没有链接 `libruntime.so`，只链接了 `libascendcl.so`。
 - `CopyBuffer` 当前默认只有一段连续地址，无法精确表达 benchmark 中“多个离散 allocation”的 merge 和 split。
-- `CopyCase::Context` 没有 stream count，无法复用 example 中 ACL multi-stream baseline。
 - 现有 D2D case 没有正确性校验，benchmark 的 pattern 初始化和 D2H 校验需要补进来。
 
 ## 整合目标
@@ -78,10 +77,9 @@ Ascend 后端已有能力：
 
 - FFTS SDMA context 构造和 launch 成为 Ascend copy instance 的一种实现。
 - merge 和 split 成为 `copy` 可选择的 case。
-- ACL CE 路径继续作为 baseline，结果格式复用 `CopyResult`。
+- 仓库已有 `device_to_device_ce`，新 case 只注册 FFTS merge/split 能力，不内置 ACL CE 对比。
 - benchmark 参数尽量映射到现有 `copy` 参数：`size` 对应单个 IO 大小，`num` 对应 buffer 数量，`iter` 对应测量迭代次数，`nDevice` 控制跑多少个 device。
 - `-d` 在 copy 程序里继续表示 device count，不改成 example 的 device id，避免破坏现有语义。
-- 如需 multi-stream baseline，新增 `-m <stream_count>`，默认 1，仅新 case 使用。
 
 ## 推荐文件拆分
 
@@ -97,7 +95,7 @@ Ascend 后端已有能力：
 
 `@module/copy/ascend/copy_case_ffts_d2d_ascend.cc`
 
-用途：注册 merge/split 对比 case，负责构造 patterned buffer、运行 CE 和 FFTS、执行校验。
+用途：注册 merge/split FFTS case，负责构造 patterned buffer、运行 FFTS、执行校验。
 
 可选新增文件：
 
@@ -149,24 +147,24 @@ Ascend 后端已有能力：
 
 ### 3. merge 和 split case 注册
 
-建议注册两个对比 case：
+建议注册两个 FFTS case：
 
-- `ascend_d2d_merge_ffts_vs_acl`
-- `ascend_d2d_split_ffts_vs_acl`
+- `ascend_d2d_merge_ffts`
+- `ascend_d2d_split_ffts`
 
-每个 case 在每个 device 上构造一组 buffer，分别跑 ACL CE 和 FFTS，并把两个结果 push 到同一个 `CopyResult` 中。
+每个 case 在每个 device 上构造一组 buffer，只运行 FFTS copy instance，并把结果 push 到 `CopyResult` 中。ACL baseline 继续使用已有 `device_to_device_ce` case。
 
 merge 的数据组织：
 
 - 源端是 N 个片段。
 - 目标端是一个连续 transfer buffer 的 N 个 offset。
-- CE 和 FFTS 使用相同 `src`、`dst` 列表。
+- FFTS 使用 merge 方向的 `src`、`dst` 列表。
 
 split 的数据组织：
 
 - 源端是一个连续 transfer buffer 的 N 个 offset。
 - 目标端是 N 个片段。
-- CE 和 FFTS 使用相同 `src`、`dst` 列表。
+- FFTS 使用 split 方向的 `src`、`dst` 列表。
 
 正确性校验：
 
@@ -207,20 +205,16 @@ split 的数据组织：
 - `-i`：迭代次数。
 - `-d`：device count。
 
-新增：
-
-- `-m`：stream count，默认 1。
-
 推荐运行方式：
 
 ```text
-copy -t ascend_d2d_merge_ffts_vs_acl -s 64K -n 1024 -i 128 -d 1 -m 4
-copy -t ascend_d2d_split_ffts_vs_acl -s 64K -n 1024 -i 128 -d 1 -m 4
+copy -t ascend_d2d_merge_ffts -s 64K -n 1024 -i 128 -d 1
+copy -t ascend_d2d_split_ffts -s 64K -n 1024 -i 128 -d 1
 ```
 
 输出方式：
 
-- 第一阶段复用 `CopyResult`，method 分别为 `CE` 和 `FFTS`。
+- 第一阶段复用 `CopyResult`，method 为 `FFTS`。
 - 第二阶段如需和 example 完全一致，再把 `Build(us)`、`Build/IO(us)` 加入 `CopyResult`。
 
 ## 构建方案
@@ -278,8 +272,6 @@ sequenceDiagram
     participant Runtime
     User->>Copy Main: run selected case
     Copy Main->>Copy Case: create context
-    Copy Case->>Copy Instance: run baseline
-    Copy Instance->>Runtime: submit copy work
     Copy Case->>Copy Instance: run ffts
     Copy Instance->>Ffts Dispatcher: build task
     Ffts Dispatcher->>Runtime: launch task
@@ -307,13 +299,12 @@ sequenceDiagram
 第二阶段：复刻 merge/split benchmark
 
 - 增加 pattern 初始化和 D2H 校验工具。
-- 注册 `ascend_d2d_merge_ffts_vs_acl` 和 `ascend_d2d_split_ffts_vs_acl`。
+- 注册 `ascend_d2d_merge_ffts` 和 `ascend_d2d_split_ffts`。
 - 如果采用精确路径，先扩展 `CopyBuffer` 的地址访问，再新增 fragmented device buffer。
-- CE 和 FFTS 使用同一份 copy spec，确保对比公平。
+- 如需 ACL 对照，使用已有 `device_to_device_ce` case 单独运行。
 
 第三阶段：输出和 sweep 对齐
 
-- 增加 `-m` stream count。
 - 如有需要，扩展 `CopyResult` 支持 build 时间。
 - 把 example 的 sweep 逻辑迁移为脚本或 README 示例，统一从 `copy` 二进制运行。
 
@@ -330,12 +321,11 @@ sequenceDiagram
 - 小规模 smoke：`size=2K`、`num=4`、`iter=3`、`device count=1`。
 - 中规模对齐：`size=64K`、`num=1024`、`iter=128`。
 - merge 和 split 都必须通过 D2H 校验。
-- CE 与 FFTS 的 copy 总字节数、buffer 数量、stream 计时范围必须一致。
+- FFTS 的 copy 总字节数和 buffer 数量必须与 case 参数一致。
 
 结果校验：
 
 - `FFTS` method 的 submit 时间应显著体现单次 launch 的特征。
-- `CE` method 的 submit 时间应随 buffer count 线性上升。
 - copy 时间和带宽需要与原 example 同量级，不要求完全相同，因为整合后可能使用统一统计框架。
 
 ## 风险和注意事项
@@ -344,7 +334,6 @@ sequenceDiagram
 - FFTS 官方 header 必须配合结构大小检查，任何不匹配都应在编译期或启动早期暴露。
 - `kSdmaFp32AtomicMoveSqe` 这类 magic value 应集中放在 dispatcher 内，并用注释说明来源和适用范围。
 - 单个 copy size 受 32 位长度字段限制，超大 buffer 需要显式拒绝。
-- multi-stream ACL baseline 的 stop event 必须等待所有 stream 的 end event 后再记录，否则 copy 时间会偏小。
 - 如果扩展 `CopyBuffer` 为虚函数访问，需要确认 CUDA、GDR、Simulation 后端都仍按原语义工作。
 
 ## 推荐结论
