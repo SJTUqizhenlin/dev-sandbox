@@ -26,6 +26,7 @@
 
 #include <acl/acl.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -44,8 +45,9 @@
 
 constexpr uint32_t kFftsSdmaFp32AtomicMoveSqe = 0x1E70;
 constexpr uint16_t kFftsContextMaxNum = 128;
-constexpr uint16_t kFftsMaxReadyLanes = 8;
+constexpr uint16_t kDefaultFftsMaxReadyLanes = 8;
 constexpr uint8_t kFftsCommunicationTask = 0x5A;
+constexpr const char* kFftsMaxReadyLanesEnv = "FFTS_MAX_READY_LANES";
 
 static_assert(sizeof(rtFftsPlusComCtx_t) == 128, "rtFftsPlusComCtx_t must be 128 bytes");
 static_assert(sizeof(rtFftsPlusSdmaCtx_t) == 128, "rtFftsPlusSdmaCtx_t must be 128 bytes");
@@ -116,8 +118,9 @@ public:
         if (copies.empty()) { return 0; }
 
         Reserve(copies.size());
+        const uint16_t maxReadyLanes = MaxReadyLanes();
         const uint16_t laneCount =
-            static_cast<uint16_t>(std::min<size_t>(copies.size(), kFftsMaxReadyLanes));
+            static_cast<uint16_t>(std::min<size_t>(copies.size(), maxReadyLanes));
         std::vector<int32_t> lastTaskId(laneCount, -1);
 
         for (size_t i = 0; i < copies.size(); ++i) {
@@ -162,6 +165,24 @@ public:
     }
 
 private:
+    static uint16_t MaxReadyLanes()
+    {
+        const char* value = std::getenv(kFftsMaxReadyLanesEnv);
+        if (value == nullptr || value[0] == '\0') { return kDefaultFftsMaxReadyLanes; }
+
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(value, &end, 10);
+        if (errno != 0 || end == value || *end != '\0' || parsed == 0) {
+            return kDefaultFftsMaxReadyLanes;
+        }
+
+        const auto maxValue =
+            static_cast<unsigned long>(std::numeric_limits<uint16_t>::max());
+        if (parsed > maxValue) { return std::numeric_limits<uint16_t>::max(); }
+        return static_cast<uint16_t>(parsed);
+    }
+
     static uint64_t PtrToU64(const void* ptr)
     {
         return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ptr));
