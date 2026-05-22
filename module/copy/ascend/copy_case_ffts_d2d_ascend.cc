@@ -28,6 +28,7 @@
 #include "copy_case.h"
 #include "copy_instance_ascend.h"
 #include "copy_instance_ffts_ascend.h"
+#include "copy_instance_ffts_host_direct_ascend.h"
 #include "copy_instance_ffts_pipeline_ascend.h"
 
 namespace {
@@ -162,6 +163,74 @@ DEFINE_COPY_CASE(AscendFFTSMergeD2HCase, "ascend_ffts_merge_d2h",
         ResetHostBuffer(dstBuffer);
 
         FFTSMergeD2HCopyInstance instance{ctx.iter, true};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendH2DFFTSDirectCase, "ascend_h2d_ffts_direct",
+                 "copy host buffers directly to fragmented device buffers with ffts", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSDirectCopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidatePatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendFFTSDirectD2HCase, "ascend_ffts_d2h_direct",
+                 "copy fragmented device buffers directly to host buffers with ffts", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        FragmentedDeviceCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        HostCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializePatternedBuffer(srcBuffer);
+        ResetHostBuffer(dstBuffer);
+
+        FFTSDirectD2HCopyInstance instance{ctx.iter, true};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendAnonH2DFFTSDirectCase, "ascend_anon_h2d_ffts_direct",
+                 "copy mapped host buffers directly to fragmented device buffers with ffts", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        AnonymousCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSDirectCopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidatePatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendFFTSDirectD2HAnonCase, "ascend_ffts_d2h_anon_direct",
+                 "copy fragmented device buffers directly to mapped host buffers with ffts", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        FragmentedDeviceCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        AnonymousCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializePatternedBuffer(srcBuffer);
+        ResetHostBuffer(dstBuffer);
+
+        FFTSDirectD2HCopyInstance instance{ctx.iter, true};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
         ASSERT(ValidateHostPatternedBuffer(dstBuffer));
     }

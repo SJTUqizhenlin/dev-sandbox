@@ -60,11 +60,13 @@ static_assert(sizeof(rtFftsPlusSdmaCtx_t) == 128, "rtFftsPlusSdmaCtx_t must be 1
         }                                                                             \
     } while (0)
 
-struct AscendD2DCopySpec {
+struct AscendFftsCopySpec {
     void* dst;
     const void* src;
     size_t size;
 };
+
+using AscendD2DCopySpec = AscendFftsCopySpec;
 
 class FftsD2DDispatcher {
 public:
@@ -108,7 +110,7 @@ public:
         successor.predCnt++;
     }
 
-    uint16_t BuildCopies(const std::vector<AscendD2DCopySpec>& copies)
+    uint16_t BuildCopies(const std::vector<AscendFftsCopySpec>& copies)
     {
         Reset();
         if (copies.empty()) { return 0; }
