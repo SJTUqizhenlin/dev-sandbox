@@ -64,6 +64,8 @@ function(detect_runtime_backend)
         set(_ASCEND_ROOT "$ENV{ASCEND_HOME}")
     elseif(DEFINED ENV{ASCEND_TOOLKIT_HOME})
         set(_ASCEND_ROOT "$ENV{ASCEND_TOOLKIT_HOME}")
+    elseif(DEFINED ENV{ASCEND_HOME_PATH})
+        set(_ASCEND_ROOT "$ENV{ASCEND_HOME_PATH}")
     elseif(EXISTS "/usr/local/Ascend/ascend-toolkit/latest")
         set(_ASCEND_ROOT "/usr/local/Ascend/ascend-toolkit/latest")
     endif()
@@ -111,14 +113,41 @@ function(detect_runtime_backend)
                     AND EXISTS "${_ASCEND_FFTS_INCLUDE_PARENT}")
                     list(APPEND _ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_FFTS_INCLUDE_PARENT}")
                 endif()
-                foreach(_ASCEND_EXTRA_INCLUDE_DIR
+
+                set(_ASCEND_FFTS_EXTRA_INCLUDE_CANDIDATES
                     "${_ASCEND_ROOT}/pkg_inc"
+                    "${_ASCEND_ROOT}/pkg_inc/toolchain"
+                    "${_ASCEND_ROOT}/pkg_inc/profiling"
                     "${_ASCEND_ROOT}/aarch64-linux/pkg_inc"
-                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc")
+                    "${_ASCEND_ROOT}/aarch64-linux/pkg_inc/toolchain"
+                    "${_ASCEND_ROOT}/aarch64-linux/pkg_inc/profiling"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc/toolchain"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc/profiling")
+                foreach(_ASCEND_EXTRA_INCLUDE_DIR
+                    ${_ASCEND_FFTS_EXTRA_INCLUDE_CANDIDATES})
                     if(EXISTS "${_ASCEND_EXTRA_INCLUDE_DIR}")
                         list(APPEND _ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_EXTRA_INCLUDE_DIR}")
                     endif()
                 endforeach()
+                find_path(_ASCEND_PROF_COMMON_INCLUDE_DIR
+                    NAMES prof_common.h
+                    PATHS ${_ASCEND_FFTS_EXTRA_INCLUDE_CANDIDATES}
+                    NO_DEFAULT_PATH
+                )
+                if(_ASCEND_PROF_COMMON_INCLUDE_DIR)
+                    list(APPEND _ASCEND_FFTS_INCLUDE_DIRS
+                        "${_ASCEND_PROF_COMMON_INCLUDE_DIR}")
+                endif()
+                find_path(_ASCEND_PROF_API_INCLUDE_DIR
+                    NAMES prof_api.h toolchain/prof_api.h profiling/prof_api.h
+                    PATHS ${_ASCEND_FFTS_EXTRA_INCLUDE_CANDIDATES}
+                    NO_DEFAULT_PATH
+                )
+                if(_ASCEND_PROF_API_INCLUDE_DIR)
+                    list(APPEND _ASCEND_FFTS_INCLUDE_DIRS
+                        "${_ASCEND_PROF_API_INCLUDE_DIR}")
+                endif()
                 list(REMOVE_DUPLICATES _ASCEND_FFTS_INCLUDE_DIRS)
             endif()
 
