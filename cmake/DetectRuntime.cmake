@@ -103,12 +103,30 @@ function(detect_runtime_backend)
                     "/usr/local/Ascend/cann/aarch64-linux/pkg_inc/runtime"
                 NO_DEFAULT_PATH
             )
+            if(_ASCEND_FFTS_INCLUDE_DIR)
+                set(_ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_FFTS_INCLUDE_DIR}")
+                get_filename_component(_ASCEND_FFTS_INCLUDE_PARENT
+                    "${_ASCEND_FFTS_INCLUDE_DIR}" DIRECTORY)
+                if(_ASCEND_FFTS_INCLUDE_DIR MATCHES "/runtime$"
+                    AND EXISTS "${_ASCEND_FFTS_INCLUDE_PARENT}")
+                    list(APPEND _ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_FFTS_INCLUDE_PARENT}")
+                endif()
+                foreach(_ASCEND_EXTRA_INCLUDE_DIR
+                    "${_ASCEND_ROOT}/pkg_inc"
+                    "${_ASCEND_ROOT}/aarch64-linux/pkg_inc"
+                    "/usr/local/Ascend/cann/aarch64-linux/pkg_inc")
+                    if(EXISTS "${_ASCEND_EXTRA_INCLUDE_DIR}")
+                        list(APPEND _ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_EXTRA_INCLUDE_DIR}")
+                    endif()
+                endforeach()
+                list(REMOVE_DUPLICATES _ASCEND_FFTS_INCLUDE_DIRS)
+            endif()
 
             message(STATUS "Found Ascend runtime: ${_ASCEND_ROOT}")
             message(STATUS "  Include: ${_ASCEND_INCLUDE_DIR}")
             message(STATUS "  Library: ${_ASCEND_LIBRARY}")
             if(_ASCEND_RUNTIME_LIBRARY AND _ASCEND_FFTS_INCLUDE_DIR)
-                message(STATUS "  FFTS Include: ${_ASCEND_FFTS_INCLUDE_DIR}")
+                message(STATUS "  FFTS Includes: ${_ASCEND_FFTS_INCLUDE_DIRS}")
                 message(STATUS "  Runtime Library: ${_ASCEND_RUNTIME_LIBRARY}")
             else()
                 message(STATUS "  FFTS support: disabled (missing FFTS header or libruntime)")
@@ -126,7 +144,7 @@ function(detect_runtime_backend)
             if(_ASCEND_RUNTIME_LIBRARY AND _ASCEND_FFTS_INCLUDE_DIR)
                 set(HAVE_ASCEND_FFTS_RUNTIME TRUE PARENT_SCOPE)
                 set(ASCEND_RUNTIME_LIBRARY "${_ASCEND_RUNTIME_LIBRARY}" PARENT_SCOPE)
-                set(ASCEND_FFTS_INCLUDE_DIR "${_ASCEND_FFTS_INCLUDE_DIR}" PARENT_SCOPE)
+                set(ASCEND_FFTS_INCLUDE_DIRS "${_ASCEND_FFTS_INCLUDE_DIRS}" PARENT_SCOPE)
             endif()
 
             return()
