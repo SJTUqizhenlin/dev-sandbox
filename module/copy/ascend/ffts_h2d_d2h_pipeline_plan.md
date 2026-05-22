@@ -256,6 +256,7 @@ DoCopyOnce 阶段：
 H2D big copy + FFTS split：
 
 - Host packed buffer 每个 offset 写入对应 pattern。
+- 正式计时前先跑一次同 stream 预检：临时 transfer buffer 和目标 fragmented buffer 清零，连续提交一次大 H2D 和一次 FFTS split，同步后校验 fragmented result。
 - pipeline 完成后，回读每个 fragmented device buffer。
 - 比较对应 pattern。
 

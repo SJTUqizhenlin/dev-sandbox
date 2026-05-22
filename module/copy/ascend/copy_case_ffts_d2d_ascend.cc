@@ -23,6 +23,7 @@
  * */
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include "copy_buffer_ascend.h"
 #include "copy_case.h"
@@ -109,6 +110,43 @@ bool ValidateHostPatternedBuffer(const CopyBuffer& buffer)
     return true;
 }
 
+size_t TotalBytes(const CopyBuffer& buffer)
+{
+    ASSERT(buffer.Number() > 0);
+    ASSERT(buffer.Size() <= std::numeric_limits<size_t>::max() / buffer.Number());
+    return buffer.Size() * buffer.Number();
+}
+
+void ValidateH2DFFTSSplitPreflight(const CopyBuffer& srcBuffer, const CopyBuffer& dstBuffer)
+{
+    ASSERT(srcBuffer.Size() == dstBuffer.Size());
+    ASSERT(srcBuffer.Number() == dstBuffer.Number());
+
+    DeviceCopyBuffer transferBuffer{dstBuffer.Device(), dstBuffer.Size(), dstBuffer.Number()};
+    ResetBuffer(transferBuffer);
+    ResetBuffer(dstBuffer);
+
+    std::vector<AscendD2DCopySpec> copies;
+    copies.reserve(dstBuffer.Number());
+    for (size_t i = 0; i < dstBuffer.Number(); ++i) {
+        copies.push_back({dstBuffer[i], transferBuffer[i], dstBuffer.Size()});
+    }
+
+    aclrtStream stream = nullptr;
+    FftsD2DDispatcher dispatcher;
+    ASCEND_ASSERT(aclrtSetDevice(dstBuffer.Device()));
+    ASCEND_ASSERT(aclrtCreateStream(&stream));
+    ASCEND_ASSERT(aclrtMemcpyAsync(transferBuffer[0], TotalBytes(transferBuffer), srcBuffer[0],
+                                   TotalBytes(srcBuffer), ACL_MEMCPY_HOST_TO_DEVICE, stream));
+    const auto readyCount = dispatcher.BuildCopies(copies);
+    ASSERT(readyCount > 0);
+    dispatcher.Launch(stream, readyCount);
+    ASCEND_ASSERT(aclrtSynchronizeStream(stream));
+    ASCEND_ASSERT(aclrtDestroyStream(stream));
+
+    ASSERT(ValidatePatternedBuffer(dstBuffer));
+}
+
 void RunD2DFFTSPath(CopyResult* result, const CopyBuffer& srcBuffer, const CopyBuffer& dstBuffer,
                     const CopyCase::Context& ctx)
 {
@@ -142,6 +180,7 @@ DEFINE_COPY_CASE(AscendH2DFFTSSplitCase, "ascend_h2d_ffts_split",
         HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
         FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializeHostPatternedBuffer(srcBuffer);
+        ValidateH2DFFTSSplitPreflight(srcBuffer, dstBuffer);
         ResetBuffer(dstBuffer);
 
         H2DFFTSSplitCopyInstance instance{ctx.iter, false};
