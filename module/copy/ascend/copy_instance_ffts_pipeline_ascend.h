@@ -25,6 +25,7 @@
 #define COPY_INSTANCE_FFTS_PIPELINE_ASCEND_H
 
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -38,6 +39,7 @@ protected:
     size_t deviceId_ = 0;
     size_t size_ = 0;
     size_t number_ = 0;
+    size_t totalBytes_ = 0;
     aclrtStream stream_ = nullptr;
     aclrtEvent totalStart_ = nullptr;
     aclrtEvent totalEnd_ = nullptr;
@@ -58,6 +60,9 @@ protected:
         deviceId_ = AffinityDeviceId(src, dst);
         size_ = src.Size();
         number_ = src.Number();
+        ASSERT(number_ > 0);
+        ASSERT(size_ <= std::numeric_limits<size_t>::max() / number_);
+        totalBytes_ = size_ * number_;
         transferBuffer_ = std::make_unique<DeviceCopyBuffer>(deviceId_, size_, number_);
 
         ASCEND_ASSERT(aclrtSetDevice(deviceId_));
@@ -85,6 +90,7 @@ protected:
         transferBuffer_.reset();
         size_ = 0;
         number_ = 0;
+        totalBytes_ = 0;
     }
 
     void SubmitFftsCopies()
@@ -120,8 +126,8 @@ protected:
 
 class H2DFFTSSplitCopyInstance : public FftsPipelineCopyInstanceBase {
 protected:
-    std::vector<void*> hostSrc_;
-    std::vector<void*> transferDst_;
+    void* hostBase_ = nullptr;
+    void* transferBase_ = nullptr;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -132,31 +138,27 @@ protected:
         const auto& dst = *dstBuffers.front();
         PrepareCommon(src, dst);
 
-        hostSrc_.reserve(number_);
-        transferDst_.reserve(number_);
+        hostBase_ = src[0];
+        transferBase_ = (*transferBuffer_)[0];
         fftsCopies_.reserve(number_);
         for (size_t i = 0; i < number_; ++i) {
             auto* transfer = (*transferBuffer_)[i];
-            hostSrc_.push_back(src[i]);
-            transferDst_.push_back(transfer);
             fftsCopies_.push_back({dst[i], transfer, size_});
         }
     }
 
     void Cleanup() override
     {
-        hostSrc_.clear();
-        transferDst_.clear();
+        hostBase_ = nullptr;
+        transferBase_ = nullptr;
         FftsPipelineCopyInstanceBase::Cleanup();
     }
 
     std::pair<size_t, size_t> DoCopyOnce() override
     {
         return MeasurePipeline([&]() {
-            for (size_t i = 0; i < number_; ++i) {
-                ASCEND_ASSERT(aclrtMemcpyAsync(transferDst_[i], size_, hostSrc_[i], size_,
-                                               ACL_MEMCPY_HOST_TO_DEVICE, stream_));
-            }
+            ASCEND_ASSERT(aclrtMemcpyAsync(transferBase_, totalBytes_, hostBase_, totalBytes_,
+                                           ACL_MEMCPY_HOST_TO_DEVICE, stream_));
             SubmitFftsCopies();
         });
     }
@@ -172,8 +174,8 @@ public:
 
 class FFTSMergeD2HCopyInstance : public FftsPipelineCopyInstanceBase {
 protected:
-    std::vector<void*> transferSrc_;
-    std::vector<void*> hostDst_;
+    void* transferBase_ = nullptr;
+    void* hostBase_ = nullptr;
 
     void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
                  const std::vector<const CopyBuffer*>& dstBuffers) override
@@ -184,21 +186,19 @@ protected:
         const auto& dst = *dstBuffers.front();
         PrepareCommon(src, dst);
 
-        transferSrc_.reserve(number_);
-        hostDst_.reserve(number_);
+        transferBase_ = (*transferBuffer_)[0];
+        hostBase_ = dst[0];
         fftsCopies_.reserve(number_);
         for (size_t i = 0; i < number_; ++i) {
             auto* transfer = (*transferBuffer_)[i];
             fftsCopies_.push_back({transfer, src[i], size_});
-            transferSrc_.push_back(transfer);
-            hostDst_.push_back(dst[i]);
         }
     }
 
     void Cleanup() override
     {
-        transferSrc_.clear();
-        hostDst_.clear();
+        transferBase_ = nullptr;
+        hostBase_ = nullptr;
         FftsPipelineCopyInstanceBase::Cleanup();
     }
 
@@ -206,10 +206,8 @@ protected:
     {
         return MeasurePipeline([&]() {
             SubmitFftsCopies();
-            for (size_t i = 0; i < number_; ++i) {
-                ASCEND_ASSERT(aclrtMemcpyAsync(hostDst_[i], size_, transferSrc_[i], size_,
-                                               ACL_MEMCPY_DEVICE_TO_HOST, stream_));
-            }
+            ASCEND_ASSERT(aclrtMemcpyAsync(hostBase_, totalBytes_, transferBase_, totalBytes_,
+                                           ACL_MEMCPY_DEVICE_TO_HOST, stream_));
         });
     }
 
