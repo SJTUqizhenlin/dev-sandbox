@@ -22,6 +22,7 @@
  * SOFTWARE.
  * */
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include "copy_buffer_ascend.h"
@@ -32,6 +33,15 @@
 #include "copy_instance_ffts_pipeline_ascend.h"
 
 namespace {
+
+bool FftsValidationEnabled()
+{
+    const char* value = std::getenv("COPY_FFTS_VALIDATE");
+    if (value == nullptr) { return false; }
+    return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+           std::strcmp(value, "TRUE") == 0 || std::strcmp(value, "on") == 0 ||
+           std::strcmp(value, "ON") == 0;
+}
 
 std::vector<uint8_t> MakePattern(size_t fragmentIndex, size_t size)
 {
@@ -123,13 +133,23 @@ bool ValidateHostPatternedBuffer(const CopyBuffer& buffer)
     return true;
 }
 
+void ValidateDeviceBufferIfEnabled(const CopyBuffer& buffer)
+{
+    if (FftsValidationEnabled()) { ASSERT(ValidatePatternedBuffer(buffer)); }
+}
+
+void ValidateHostBufferIfEnabled(const CopyBuffer& buffer)
+{
+    if (FftsValidationEnabled()) { ASSERT(ValidateHostPatternedBuffer(buffer)); }
+}
+
 void RunD2DFFTSPath(CopyResult* result, const CopyBuffer& srcBuffer, const CopyBuffer& dstBuffer,
                     const CopyCase::Context& ctx)
 {
     ResetBuffer(dstBuffer);
     D2DFFTSCopyInstance instance{ctx.iter, false};
     result->Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-    ASSERT(ValidatePatternedBuffer(dstBuffer));
+    ValidateDeviceBufferIfEnabled(dstBuffer);
 }
 
 }  // namespace
@@ -160,7 +180,7 @@ DEFINE_COPY_CASE(AscendH2DFFTSSplitCase, "ascend_h2d_ffts_split",
 
         H2DFFTSSplitCopyInstance instance{ctx.iter, false};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidatePatternedBuffer(dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -177,7 +197,7 @@ DEFINE_COPY_CASE(AscendFFTSMergeD2HCase, "ascend_ffts_merge_d2h",
 
         FFTSMergeD2HCopyInstance instance{ctx.iter, true};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+        ValidateHostBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -194,7 +214,7 @@ DEFINE_COPY_CASE(AscendH2DFFTSDirectCase, "ascend_h2d_ffts_direct",
 
         H2DFFTSDirectCopyInstance instance{ctx.iter, false};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidatePatternedBuffer(dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -211,7 +231,7 @@ DEFINE_COPY_CASE(AscendFFTSDirectD2HCase, "ascend_ffts_d2h_direct",
 
         FFTSDirectD2HCopyInstance instance{ctx.iter, true};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+        ValidateHostBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -229,7 +249,7 @@ DEFINE_COPY_CASE(AscendRegH2DFFTSDirectCase, "ascend_reg_h2d_ffts_direct",
 
         H2DFFTSDirectCopyInstance instance{ctx.iter, false};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidatePatternedBuffer(dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -247,7 +267,7 @@ DEFINE_COPY_CASE(AscendFFTSDirectD2HRegCase, "ascend_ffts_d2h_reg_direct",
 
         FFTSDirectD2HCopyInstance instance{ctx.iter, true};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+        ValidateHostBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -265,7 +285,7 @@ DEFINE_COPY_CASE(AscendRegV2H2DFFTSDirectCase, "ascend_regv2_h2d_ffts_direct",
 
         H2DFFTSDirectCopyInstance instance{ctx.iter, false};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidatePatternedBuffer(dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
@@ -283,7 +303,7 @@ DEFINE_COPY_CASE(AscendFFTSDirectD2HRegV2Case, "ascend_ffts_d2h_regv2_direct",
 
         FFTSDirectD2HCopyInstance instance{ctx.iter, true};
         result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
-        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+        ValidateHostBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }

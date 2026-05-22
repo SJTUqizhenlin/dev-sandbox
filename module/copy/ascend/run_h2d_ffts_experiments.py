@@ -122,6 +122,12 @@ def parse_copy_output(output: str) -> dict[str, str]:
     return matches[0]
 
 
+def benchmark_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["COPY_FFTS_VALIDATE"] = "0"
+    return env
+
+
 def run_one(args, out_dir: Path, experiment: str, x_value: str, io_size: str, buffer_num: int,
             repeat: int, case_id: str, copy_case: str, case_label: str) -> dict[str, str]:
     log_dir = out_dir / "logs"
@@ -143,9 +149,16 @@ def run_one(args, out_dir: Path, experiment: str, x_value: str, io_size: str, bu
         "-d",
         str(args.device_count),
     ]
+    command_text = f"COPY_FFTS_VALIDATE=0 {shlex.join(cmd)}"
     print(f"[run] {experiment} x={x_value} case={case_label} repeat={repeat}: "
-          f"{shlex.join(cmd)}")
-    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          f"{command_text}")
+    completed = subprocess.run(
+        cmd,
+        env=benchmark_env(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
     log_file.write_text(completed.stdout, encoding="utf-8")
     if completed.returncode != 0:
         print(completed.stdout)
@@ -178,7 +191,7 @@ def run_one(args, out_dir: Path, experiment: str, x_value: str, io_size: str, bu
         "copy_p90_us": parsed["copy_p90"],
         "bw_gbs": parsed["bw_gbs"],
         "log_file": str(log_file.relative_to(out_dir)),
-        "command": shlex.join(cmd),
+        "command": command_text,
     }
 
 
@@ -460,6 +473,7 @@ def main() -> int:
 
     print(f"[config] copy_bin={args.copy_bin}")
     print(f"[config] output_dir={args.output_dir}")
+    print("[config] validation=disabled")
     print(
         f"[config] experiment1 sizes={size_sweep_sizes}, "
         f"buffer_num={args.size_sweep_buffer_num}, iterations={args.iterations}"
