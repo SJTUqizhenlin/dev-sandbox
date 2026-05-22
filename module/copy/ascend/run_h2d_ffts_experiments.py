@@ -423,7 +423,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument(
         "--size-sweep-sizes",
-        default="2K,37K,64K,128K,256K,512K",
+        default="2K,8K,37K,64K,128K,256K,512K",
         help="Comma or semicolon separated IO sizes for experiment 1.",
     )
     parser.add_argument(
