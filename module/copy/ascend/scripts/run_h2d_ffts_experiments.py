@@ -82,7 +82,7 @@ AGG_FIELDS = [
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[4]
 
 
 def split_list(text: str) -> list[str]:
