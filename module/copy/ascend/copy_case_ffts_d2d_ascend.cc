@@ -28,6 +28,7 @@
 #include "copy_case.h"
 #include "copy_instance_ascend.h"
 #include "copy_instance_ffts_ascend.h"
+#include "copy_instance_ffts_pipeline_ascend.h"
 
 namespace {
 
@@ -63,11 +64,26 @@ void InitializePatternedBuffer(const CopyBuffer& buffer)
     }
 }
 
+void InitializeHostPatternedBuffer(const CopyBuffer& buffer)
+{
+    for (size_t i = 0; i < buffer.Number(); ++i) {
+        const auto pattern = MakePattern(i, buffer.Size());
+        std::memcpy(buffer[i], pattern.data(), pattern.size());
+    }
+}
+
 void ResetBuffer(const CopyBuffer& buffer)
 {
     ASCEND_ASSERT(aclrtSetDevice(buffer.Device()));
     for (size_t i = 0; i < buffer.Number(); ++i) {
         ASCEND_ASSERT(aclrtMemset(buffer[i], buffer.Size(), 0, buffer.Size()));
+    }
+}
+
+void ResetHostBuffer(const CopyBuffer& buffer)
+{
+    for (size_t i = 0; i < buffer.Number(); ++i) {
+        std::memset(buffer[i], 0, buffer.Size());
     }
 }
 
@@ -80,6 +96,15 @@ bool ValidatePatternedBuffer(const CopyBuffer& buffer)
             std::memcmp(actual.data(), expected.data(), expected.size()) != 0) {
             return false;
         }
+    }
+    return true;
+}
+
+bool ValidateHostPatternedBuffer(const CopyBuffer& buffer)
+{
+    for (size_t i = 0; i < buffer.Number(); ++i) {
+        auto expected = MakePattern(i, buffer.Size());
+        if (std::memcmp(buffer[i], expected.data(), expected.size()) != 0) { return false; }
     }
     return true;
 }
@@ -105,6 +130,40 @@ DEFINE_COPY_CASE(AscendD2DMergeFftsCase, "ascend_d2d_merge_ffts",
         InitializePatternedBuffer(srcBuffer);
 
         RunD2DFFTSPath(&result, srcBuffer, dstBuffer, ctx);
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendH2DFFTSSplitCase, "ascend_h2d_ffts_split",
+                 "copy host buffers to fragmented device buffers with h2d and ffts split", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSSplitCopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidatePatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendFFTSMergeD2HCase, "ascend_ffts_merge_d2h",
+                 "copy fragmented device buffers to host buffers with ffts merge and d2h", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        FragmentedDeviceCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        HostCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializePatternedBuffer(srcBuffer);
+        ResetHostBuffer(dstBuffer);
+
+        FFTSMergeD2HCopyInstance instance{ctx.iter, true};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
 }

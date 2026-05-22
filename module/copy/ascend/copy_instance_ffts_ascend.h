@@ -30,6 +30,8 @@
 
 class D2DFFTSCopyInstance : public AscendCopyInstanceBase {
 protected:
+    FftsD2DDispatcher dispatcher_;
+
     void CopyInternal(const AscendStreamContext& ctx) override
     {
         std::vector<AscendD2DCopySpec> copies;
@@ -38,10 +40,9 @@ protected:
             copies.push_back({ctx.dst[i], ctx.src[i], ctx.size});
         }
 
-        FftsD2DDispatcher dispatcher;
-        const auto readyCount = dispatcher.BuildCopies(copies);
+        const auto readyCount = dispatcher_.BuildCopies(copies);
         ASSERT(readyCount > 0);
-        dispatcher.Launch(ctx.stream, readyCount);
+        dispatcher_.Launch(ctx.stream, readyCount);
     }
 
     void SynchronizeInternal(const AscendStreamContext& ctx) override
