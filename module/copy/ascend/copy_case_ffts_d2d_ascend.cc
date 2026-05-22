@@ -65,11 +65,22 @@ void InitializePatternedBuffer(const CopyBuffer& buffer)
     }
 }
 
+void* HostAddress(const CopyBuffer& buffer, size_t index)
+{
+    if (const auto* mapped = dynamic_cast<const MallocHostRegisterCopyBuffer*>(&buffer)) {
+        return mapped->HostAt(index);
+    }
+    if (const auto* mapped = dynamic_cast<const MallocHostRegisterV2CopyBuffer*>(&buffer)) {
+        return mapped->HostAt(index);
+    }
+    return buffer[index];
+}
+
 void InitializeHostPatternedBuffer(const CopyBuffer& buffer)
 {
     for (size_t i = 0; i < buffer.Number(); ++i) {
         const auto pattern = MakePattern(i, buffer.Size());
-        std::memcpy(buffer[i], pattern.data(), pattern.size());
+        std::memcpy(HostAddress(buffer, i), pattern.data(), pattern.size());
     }
 }
 
@@ -84,7 +95,7 @@ void ResetBuffer(const CopyBuffer& buffer)
 void ResetHostBuffer(const CopyBuffer& buffer)
 {
     for (size_t i = 0; i < buffer.Number(); ++i) {
-        std::memset(buffer[i], 0, buffer.Size());
+        std::memset(HostAddress(buffer, i), 0, buffer.Size());
     }
 }
 
@@ -105,7 +116,9 @@ bool ValidateHostPatternedBuffer(const CopyBuffer& buffer)
 {
     for (size_t i = 0; i < buffer.Number(); ++i) {
         auto expected = MakePattern(i, buffer.Size());
-        if (std::memcmp(buffer[i], expected.data(), expected.size()) != 0) { return false; }
+        if (std::memcmp(HostAddress(buffer, i), expected.data(), expected.size()) != 0) {
+            return false;
+        }
     }
     return true;
 }
@@ -203,12 +216,13 @@ DEFINE_COPY_CASE(AscendFFTSDirectD2HCase, "ascend_ffts_d2h_direct",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE(AscendAnonH2DFFTSDirectCase, "ascend_anon_h2d_ffts_direct",
-                 "copy mapped host buffers directly to fragmented device buffers with ffts", ctx)
+DEFINE_COPY_CASE(AscendRegH2DFFTSDirectCase, "ascend_reg_h2d_ffts_direct",
+                 "copy registered host buffers directly to fragmented device buffers with ffts",
+                 ctx)
 {
     CopyResult result;
     for (size_t device = 0; device < ctx.nDevice; device++) {
-        AnonymousCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        MallocHostRegisterCopyBuffer srcBuffer{device, ctx.size, ctx.num};
         FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializeHostPatternedBuffer(srcBuffer);
         ResetBuffer(dstBuffer);
@@ -220,13 +234,50 @@ DEFINE_COPY_CASE(AscendAnonH2DFFTSDirectCase, "ascend_anon_h2d_ffts_direct",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
-DEFINE_COPY_CASE(AscendFFTSDirectD2HAnonCase, "ascend_ffts_d2h_anon_direct",
-                 "copy fragmented device buffers directly to mapped host buffers with ffts", ctx)
+DEFINE_COPY_CASE(AscendFFTSDirectD2HRegCase, "ascend_ffts_d2h_reg_direct",
+                 "copy fragmented device buffers directly to registered host buffers with ffts",
+                 ctx)
 {
     CopyResult result;
     for (size_t device = 0; device < ctx.nDevice; device++) {
         FragmentedDeviceCopyBuffer srcBuffer{device, ctx.size, ctx.num};
-        AnonymousCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        MallocHostRegisterCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializePatternedBuffer(srcBuffer);
+        ResetHostBuffer(dstBuffer);
+
+        FFTSDirectD2HCopyInstance instance{ctx.iter, true};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidateHostPatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendRegV2H2DFFTSDirectCase, "ascend_regv2_h2d_ffts_direct",
+                 "copy v2 registered host buffers directly to fragmented device buffers with ffts",
+                 ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        MallocHostRegisterV2CopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSDirectCopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ASSERT(ValidatePatternedBuffer(dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendFFTSDirectD2HRegV2Case, "ascend_ffts_d2h_regv2_direct",
+                 "copy fragmented device buffers directly to v2 registered host buffers with ffts",
+                 ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        FragmentedDeviceCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        MallocHostRegisterV2CopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializePatternedBuffer(srcBuffer);
         ResetHostBuffer(dstBuffer);
 

@@ -27,7 +27,7 @@
 目标是回答三个问题：
 
 1. FFTS SDMA context 能不能直接使用 Host 地址。
-2. 如果能使用，Host 地址需要来自 `aclrtMallocHost`，还是需要 `aclrtHostRegisterV2` 注册后的 mapped pinned host 内存。
+2. 如果能使用，FFTS SDMA 需要原始 `aclrtMallocHost` Host 地址，还是需要 `aclrtHostRegister` 或 `aclrtHostRegisterV2` 映射后的 device pointer。
 3. 去掉中间 device transfer buffer 后，整体时延和带宽相对现有两段式 pipeline 是否更好。
 
 ## 关键判断
@@ -129,16 +129,18 @@ Direct 路径的变化：
 - `ascend_h2d_ffts_direct`
 - `ascend_ffts_d2h_direct`
 
-同时保留 mapped host 版本，便于第一轮 smoke 直接区分普通 pinned host 地址和 mapped pinned host 地址：
+同时保留两种 mapped host 版本，便于第一轮 smoke 直接区分普通 pinned host 地址、`aclrtHostRegister` mapped device pointer 和 `aclrtHostRegisterV2` mapped device pointer：
 
-- `ascend_anon_h2d_ffts_direct`
-- `ascend_ffts_d2h_anon_direct`
+- `ascend_reg_h2d_ffts_direct`
+- `ascend_ffts_d2h_reg_direct`
+- `ascend_regv2_h2d_ffts_direct`
+- `ascend_ffts_d2h_regv2_direct`
 
 对应 buffer：
 
 `@module/copy/ascend/copy_buffer_ascend.h`
 
-`HostCopyBuffer` 来自 `aclrtMallocHost`。`AnonymousCopyBuffer` 来自 mmap 后的 `aclrtHostRegisterV2`，并带 mapped pinned 标志。后者更适合验证 FFTS SDMA 是否需要 device 可见的 mapped host 内存。
+`HostCopyBuffer` 来自 `aclrtMallocHost`，direct path 传原始 Host 地址。`MallocHostRegisterCopyBuffer` 来自 `aclrtMallocHost`，再调用 `aclrtHostRegister` 取得 mapped device pointer，direct path 传 mapped device pointer。`MallocHostRegisterV2CopyBuffer` 来自 `aclrtMallocHost`，再调用 `aclrtHostRegisterV2` 和 `aclrtHostGetDevicePointer` 取得 mapped device pointer，direct path 传 mapped device pointer。
 
 ## 建议新增 CopyInstance
 
@@ -182,7 +184,7 @@ D2H direct 的 prepare 逻辑：
 - 让 D2D 和 direct case 都使用这个通用 spec。
 - 如果想进一步控制改动，可以先保留 `AscendD2DCopySpec` 名字，只在 direct instance 里复用它，待实验通过后再统一重命名。
 
-首轮不建议改 SDMA context 字段，只直接传入 Host 地址。这样能最快验证 runtime 和硬件是否接受当前地址形态。
+首轮不改 SDMA context 字段，只替换传入 SDMA context 的地址形态。普通 direct case 传 Host 地址，register 和 registerV2 direct case 传 mapped device pointer。
 
 ## Host 地址实验矩阵
 
@@ -192,10 +194,12 @@ D2H direct 的 prepare 逻辑：
 | --- | --- | --- | --- |
 | A | `HostCopyBuffer` | H2D direct | 验证 `aclrtMallocHost` 地址能否作为 FFTS source |
 | B | `HostCopyBuffer` | D2H direct | 验证 `aclrtMallocHost` 地址能否作为 FFTS destination |
-| C | `AnonymousCopyBuffer` | H2D direct | 验证 mapped pinned host 地址能否作为 FFTS source |
-| D | `AnonymousCopyBuffer` | D2H direct | 验证 mapped pinned host 地址能否作为 FFTS destination |
+| C | `MallocHostRegisterCopyBuffer` | H2D direct | 验证 `aclrtHostRegister` 输出的 mapped device pointer 能否作为 FFTS source |
+| D | `MallocHostRegisterCopyBuffer` | D2H direct | 验证 `aclrtHostRegister` 输出的 mapped device pointer 能否作为 FFTS destination |
+| E | `MallocHostRegisterV2CopyBuffer` | H2D direct | 验证 `aclrtHostRegisterV2` 加 `aclrtHostGetDevicePointer` 输出的 mapped device pointer 能否作为 FFTS source |
+| F | `MallocHostRegisterV2CopyBuffer` | D2H direct | 验证 `aclrtHostRegisterV2` 加 `aclrtHostGetDevicePointer` 输出的 mapped device pointer 能否作为 FFTS destination |
 
-如果 A/B 通过，可以优先保留 `HostCopyBuffer` 版本。如果 A/B 失败但 C/D 通过，则后续正式 direct case 应明确使用 registered mapped host buffer，而不是普通 host buffer。
+如果 A/B 通过，可以优先保留 `HostCopyBuffer` 版本。如果 A/B 失败但 C/D 或 E/F 通过，则后续正式 direct case 应明确使用 mapped device pointer，而不是普通 Host 地址。
 
 ## 正确性验证
 
@@ -241,8 +245,10 @@ payload = ctx.size * ctx.num
 ```text
 copy -t ascend_h2d_ffts_direct -s 2K -n 4 -i 3 -d 1
 copy -t ascend_ffts_d2h_direct -s 2K -n 4 -i 3 -d 1
-copy -t ascend_anon_h2d_ffts_direct -s 2K -n 4 -i 3 -d 1
-copy -t ascend_ffts_d2h_anon_direct -s 2K -n 4 -i 3 -d 1
+copy -t ascend_reg_h2d_ffts_direct -s 2K -n 4 -i 3 -d 1
+copy -t ascend_ffts_d2h_reg_direct -s 2K -n 4 -i 3 -d 1
+copy -t ascend_regv2_h2d_ffts_direct -s 2K -n 4 -i 3 -d 1
+copy -t ascend_ffts_d2h_regv2_direct -s 2K -n 4 -i 3 -d 1
 ```
 
 如果 smoke 通过，再做中等规模：
@@ -286,7 +292,7 @@ Direct D2H 成功需要同时满足：
 
 - FFTS SDMA context 可能只支持 device address，不支持 Host virtual address。
 - `aclrtMallocHost` 地址可能可用于 CE，但不一定可用于 FFTS SDMA。
-- mapped pinned host 地址如果没有被 runtime 转成 FFTS 可消费的地址，仍可能失败。
+- mapped device pointer 虽然是 device 可访问地址，但官方内存管理 API 说明它不能用于普通内存复制操作，因此 FFTS SDMA 仍可能拒绝。
 - 失败形态可能是 launch 返回错误、stream 同步错误、数据 mismatch，极端情况下可能出现任务长时间不返回。
 
 回退策略：
@@ -301,7 +307,7 @@ Direct D2H 成功需要同时满足：
 1. 新增 host direct copy instance。
 2. 在 FFTS case 文件中注册 direct H2D/D2H case。
 3. 先使用 `HostCopyBuffer` 跑最小 smoke。
-4. 同时使用 `AnonymousCopyBuffer` direct case 跑 mapped host smoke。
+4. 同时使用 register 和 registerV2 direct case 跑 mapped device pointer smoke。
 5. smoke 通过后，再扩展实验脚本，把 direct case 加入 H2D 对比矩阵。
 6. 根据 Direct 与现有 pipeline 的结果决定是否保留为正式 case，还是只保留为实验 case。
 

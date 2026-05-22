@@ -74,6 +74,93 @@ public:
     std::string Name() const override { return "acl::anon::" + std::to_string(device_); }
 };
 
+class MallocHostRegisterCopyBuffer : public CopyBuffer {
+public:
+    MallocHostRegisterCopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = size * number;
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(aclrtMallocHost(&hostAddr_, total));
+        std::memset(hostAddr_, 'r', total);
+        ASCEND_ASSERT(aclrtHostRegister(hostAddr_, total, ACL_HOST_REGISTER_MAPPED,
+                                        &deviceAddr_));
+        addr_ = deviceAddr_;
+    }
+
+    ~MallocHostRegisterCopyBuffer() override
+    {
+        if (hostAddr_) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            ASCEND_ASSERT(aclrtHostUnregister(hostAddr_));
+            ASCEND_ASSERT(aclrtFreeHost(hostAddr_));
+            hostAddr_ = nullptr;
+            deviceAddr_ = nullptr;
+            addr_ = nullptr;
+        }
+    }
+
+    void* At(size_t i) const override
+    {
+        return static_cast<void*>(static_cast<char*>(deviceAddr_) + i * size_);
+    }
+
+    void* HostAt(size_t i) const
+    {
+        return static_cast<void*>(static_cast<char*>(hostAddr_) + i * size_);
+    }
+
+    std::string Name() const override { return "acl::host_reg::" + std::to_string(device_); }
+
+private:
+    void* hostAddr_ = nullptr;
+    void* deviceAddr_ = nullptr;
+};
+
+class MallocHostRegisterV2CopyBuffer : public CopyBuffer {
+public:
+    MallocHostRegisterV2CopyBuffer(size_t device, size_t size, size_t number)
+        : CopyBuffer{device, size, number}
+    {
+        const auto total = size * number;
+        ASCEND_ASSERT(aclrtSetDevice(device_));
+        ASCEND_ASSERT(aclrtMallocHost(&hostAddr_, total));
+        std::memset(hostAddr_, 'v', total);
+        ASCEND_ASSERT(aclrtHostRegisterV2(hostAddr_, total,
+                                          ACL_HOST_REG_MAPPED | ACL_HOST_REG_PINNED));
+        ASCEND_ASSERT(aclrtHostGetDevicePointer(hostAddr_, &deviceAddr_, 0));
+        addr_ = deviceAddr_;
+    }
+
+    ~MallocHostRegisterV2CopyBuffer() override
+    {
+        if (hostAddr_) {
+            ASCEND_ASSERT(aclrtSetDevice(device_));
+            ASCEND_ASSERT(aclrtHostUnregister(hostAddr_));
+            ASCEND_ASSERT(aclrtFreeHost(hostAddr_));
+            hostAddr_ = nullptr;
+            deviceAddr_ = nullptr;
+            addr_ = nullptr;
+        }
+    }
+
+    void* At(size_t i) const override
+    {
+        return static_cast<void*>(static_cast<char*>(deviceAddr_) + i * size_);
+    }
+
+    void* HostAt(size_t i) const
+    {
+        return static_cast<void*>(static_cast<char*>(hostAddr_) + i * size_);
+    }
+
+    std::string Name() const override { return "acl::host_regv2::" + std::to_string(device_); }
+
+private:
+    void* hostAddr_ = nullptr;
+    void* deviceAddr_ = nullptr;
+};
+
 class DeviceCopyBuffer : public CopyBuffer {
 public:
     DeviceCopyBuffer(size_t device, size_t size, size_t number) : CopyBuffer{device, size, number}
