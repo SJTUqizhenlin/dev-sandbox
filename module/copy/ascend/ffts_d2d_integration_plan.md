@@ -10,15 +10,15 @@
 
 `@examples/ffts_d2d_benchmark/ffts_plus_minimal_runtime.h`
 
-`@module/copy/ascend/copy_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
 
-`@module/copy/ascend/copy_instance_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
 
-`@module/copy/ascend/copy_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
 
-`@module/copy/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/module/copy/CMakeLists.txt`
 
-`@cmake/DetectRuntime.cmake`
+`@lzx-sandbox/dev-sandbox/cmake/DetectRuntime.cmake`
 
 ## Benchmark 代码现状
 
@@ -85,21 +85,21 @@ Ascend 后端已有能力：
 
 新增文件：
 
-`@module/copy/ascend/ffts_d2d_dispatcher_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/ffts_d2d_dispatcher_ascend.h`
 
 用途：从 `MiniFftsD2DDispatcher` 抽出 FFTS SDMA context 构造、依赖链构造和 task launch。
 
-`@module/copy/ascend/copy_instance_ffts_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ffts_ascend.h`
 
 用途：新增 `D2DFFTSCopyInstance`，接入 `CopyInstance` 测量框架。
 
-`@module/copy/ascend/copy_case_ffts_d2d_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ffts_d2d_ascend.cc`
 
 用途：注册 merge/split FFTS case，负责构造 patterned buffer、运行 FFTS、执行校验。
 
 可选新增文件：
 
-`@module/copy/ascend/copy_buffer_fragmented_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_fragmented_ascend.h`
 
 用途：如果要求完全复刻 example 的“离散 allocation”，新增 fragmented device buffer。它需要配合 `CopyBuffer` 增加虚函数式地址访问。
 

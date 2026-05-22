@@ -13,15 +13,15 @@
 
 顶层构建入口：
 
-`@dev-sandbox/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/CMakeLists.txt`
 
 模块入口：
 
-`@dev-sandbox/module/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/module/CMakeLists.txt`
 
 后端检测逻辑：
 
-`@dev-sandbox/cmake/DetectRuntime.cmake`
+`@lzx-sandbox/dev-sandbox/cmake/DetectRuntime.cmake`
 
 三种后端目录命名很规律：
 
@@ -35,11 +35,11 @@
 
 入口是顶层 CMake：
 
-`@dev-sandbox/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/CMakeLists.txt`
 
 它会 include 运行时检测模块：
 
-`@dev-sandbox/cmake/DetectRuntime.cmake`
+`@lzx-sandbox/dev-sandbox/cmake/DetectRuntime.cmake`
 
 检测顺序大致是：
 
@@ -49,13 +49,13 @@
 
 然后各模块的 `CMakeLists.txt` 会根据检测结果添加不同源文件。以 `trans` 为例：
 
-`@dev-sandbox/module/trans/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/module/trans/CMakeLists.txt`
 
 如果 `ASCEND_FOUND`，就编译：
 
-`@dev-sandbox/module/trans/ascend/trans_runtime_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_runtime_ascend.cc`
 
-`@dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
 
 这意味着你读 Ascend 行为时，不需要同时脑补 CUDA 文件。编译期只会选中一套后端实现。
 
@@ -65,9 +65,9 @@
 
 先看可执行程序入口，也就是 `main`：
 
-`@dev-sandbox/module/copy/copy_main.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_main.cc`
 
-`@dev-sandbox/module/trans/trans_main.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_main.cc`
 
 重点看这些问题：
 
@@ -81,19 +81,19 @@
 
 `copy` 的 case 定义：
 
-`@dev-sandbox/module/copy/copy_case.h`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_case.h`
 
 Ascend copy case：
 
-`@dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
 
 `trans` 的 case 定义：
 
-`@dev-sandbox/module/trans/trans_case.h`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_case.h`
 
 Ascend trans case：
 
-`@dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
 
 这里有两个 C++ 初学者容易卡住的点。
 
@@ -105,23 +105,23 @@ Ascend trans case：
 
 `copy` 的通用 buffer 抽象：
 
-`@dev-sandbox/module/copy/copy_buffer.h`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_buffer.h`
 
 Ascend copy buffer：
 
-`@dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
 
 `trans` 的通用 buffer 抽象：
 
-`@dev-sandbox/module/trans/trans_buffer.h`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_buffer.h`
 
 Ascend trans host buffer：
 
-`@dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
 
 Ascend trans device buffer：
 
-`@dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
 
 这个项目里的核心模式是：
 
@@ -138,19 +138,19 @@ operator[](i) 返回 addr + i * size
 
 `copy` 的通用拷贝实例：
 
-`@dev-sandbox/module/copy/copy_instance.h`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_instance.h`
 
 Ascend copy 实现：
 
-`@dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
 
 `trans` 的通用传输模板：
 
-`@dev-sandbox/module/trans/trans_template.h`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_template.h`
 
 Ascend trans 实现：
 
-`@dev-sandbox/module/trans/ascend/trans_template_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_template_ascend.h`
 
 你可以抓住三个阶段：
 
@@ -176,7 +176,7 @@ Cleanup / OnTransPost
 
 入口：
 
-`@dev-sandbox/module/copy/copy_main.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_main.cc`
 
 核心抽象：
 
@@ -208,11 +208,11 @@ copy_main.cc
 
 对应文件：
 
-`@dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
 
-`@dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
 
-`@dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
 
 ## 5. trans 模块怎么读
 
@@ -220,7 +220,7 @@ copy_main.cc
 
 入口：
 
-`@dev-sandbox/module/trans/trans_main.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_main.cc`
 
 核心抽象：
 
@@ -263,13 +263,13 @@ trans_main.cc
 
 对应文件：
 
-`@dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
 
-`@dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
 
-`@dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
 
-`@dev-sandbox/module/trans/ascend/trans_template_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_template_ascend.h`
 
 ## 6. copy 和 trans 的区别
 
@@ -304,19 +304,19 @@ trans_main.cc
 
 入口：
 
-`@dev-sandbox/module/aio/aio_main.cc`
+`@lzx-sandbox/dev-sandbox/module/aio/aio_main.cc`
 
 核心文件：
 
-`@dev-sandbox/module/aio/aio_engine.h`
+`@lzx-sandbox/dev-sandbox/module/aio/aio_engine.h`
 
-`@dev-sandbox/module/aio/aio_impl.h`
+`@lzx-sandbox/dev-sandbox/module/aio/aio_impl.h`
 
-`@dev-sandbox/module/aio/aio_impl.cc`
+`@lzx-sandbox/dev-sandbox/module/aio/aio_impl.cc`
 
-`@dev-sandbox/module/aio/space_layout.h`
+`@lzx-sandbox/dev-sandbox/module/aio/space_layout.h`
 
-`@dev-sandbox/module/aio/host_buffer.h`
+`@lzx-sandbox/dev-sandbox/module/aio/host_buffer.h`
 
 阅读顺序建议：
 
@@ -332,11 +332,11 @@ trans_main.cc
 
 核心文件：
 
-`@dev-sandbox/module/logger/logger.h`
+`@lzx-sandbox/dev-sandbox/module/logger/logger.h`
 
-`@dev-sandbox/module/logger/logger.cc`
+`@lzx-sandbox/dev-sandbox/module/logger/logger.cc`
 
-`@dev-sandbox/module/logger/logger_example.cc`
+`@lzx-sandbox/dev-sandbox/module/logger/logger_example.cc`
 
 可以重点看：
 
@@ -381,13 +381,13 @@ trans_main.cc
 
 看：
 
-`@dev-sandbox/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/CMakeLists.txt`
 
-`@dev-sandbox/module/CMakeLists.txt`
+`@lzx-sandbox/dev-sandbox/module/CMakeLists.txt`
 
-`@dev-sandbox/module/copy/copy_main.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/copy_main.cc`
 
-`@dev-sandbox/module/trans/trans_main.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/trans_main.cc`
 
 目标：
 
@@ -399,13 +399,13 @@ trans_main.cc
 
 看：
 
-`@dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_case_ascend.cc`
 
-`@dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_host_buffer_ascend.h`
 
-`@dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_device_buffer_ascend.h`
 
-`@dev-sandbox/module/trans/ascend/trans_template_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_template_ascend.h`
 
 目标：
 
@@ -416,7 +416,7 @@ trans_main.cc
 
 继续看：
 
-`@dev-sandbox/module/trans/ascend/trans_template_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_template_ascend.h`
 
 目标：
 
@@ -428,11 +428,11 @@ trans_main.cc
 
 看：
 
-`@dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ascend.cc`
 
-`@dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
 
-`@dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ascend.h`
 
 目标：
 
@@ -443,11 +443,11 @@ trans_main.cc
 
 看：
 
-`@dev-sandbox/cmake/DetectRuntime.cmake`
+`@lzx-sandbox/dev-sandbox/cmake/DetectRuntime.cmake`
 
-`@dev-sandbox/module/copy/ascend/copy_runtime_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_runtime_ascend.cc`
 
-`@dev-sandbox/module/trans/ascend/trans_runtime_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/trans/ascend/trans_runtime_ascend.cc`
 
 目标：
 

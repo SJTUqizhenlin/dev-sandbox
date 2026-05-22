@@ -38,7 +38,7 @@ H2D/D2H 阶段传输大小应为 `total_bytes`。
 
 pipeline 实现必须遵守这个提交形态：
 
-`@module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
 
 - `H2DFFTSSplitCopyInstance` 在 FFTS split 前只调用一次 `aclrtMemcpyAsync`，从 Host 连续首地址拷贝 `total_bytes` 到 device transfer buffer 连续首地址。
 - `FFTSMergeD2HCopyInstance` 在 FFTS merge 后只调用一次 `aclrtMemcpyAsync`，从 device transfer buffer 连续首地址拷贝 `total_bytes` 到 Host 连续首地址。
@@ -58,7 +58,7 @@ host[0] host[1] ... host[N-1]
 
 可以继续使用：
 
-`@module/copy/ascend/copy_buffer_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_buffer_ascend.h`
 
 其中 `HostCopyBuffer` 本身就是 `size * number` 的连续 host allocation。大 IO 使用 `buffer[0]` 作为首地址，长度使用 `size * number`。
 
@@ -173,7 +173,7 @@ sequenceDiagram
 
 建议保留当前文件：
 
-`@module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
 
 但修正其中 H2D/D2H 提交流程。
 
@@ -219,7 +219,7 @@ DoCopyOnce 阶段：
 
 保留新增 case：
 
-`@module/copy/ascend/copy_case_ffts_d2d_ascend.cc`
+`@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ffts_d2d_ascend.cc`
 
 - `ascend_h2d_ffts_split`
 - `ascend_ffts_merge_d2h`
@@ -271,15 +271,15 @@ FFTS merge + D2H big copy：
 
 需要改：
 
-- `@module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
-- 必要时调整 `@module/copy/ascend/copy_case_ffts_d2d_ascend.cc` 的初始化和校验 helper。
+- `@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_instance_ffts_pipeline_ascend.h`
+- 必要时调整 `@lzx-sandbox/dev-sandbox/module/copy/ascend/copy_case_ffts_d2d_ascend.cc` 的初始化和校验 helper。
 
 不需要改：
 
-- `@module/copy/copy_main.cc`
-- `@module/copy/copy_case.h`
-- `@module/copy/CMakeLists.txt`
-- `@cmake/DetectRuntime.cmake`
+- `@lzx-sandbox/dev-sandbox/module/copy/copy_main.cc`
+- `@lzx-sandbox/dev-sandbox/module/copy/copy_case.h`
+- `@lzx-sandbox/dev-sandbox/module/copy/CMakeLists.txt`
+- `@lzx-sandbox/dev-sandbox/cmake/DetectRuntime.cmake`
 
 ## 推荐运行方式
 
