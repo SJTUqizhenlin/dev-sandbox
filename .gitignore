@@ -45,3 +45,4 @@
 .vscode/**
 .git/**
 **/build/**
+module/copy/ascend/h2d_ffts_results/**
