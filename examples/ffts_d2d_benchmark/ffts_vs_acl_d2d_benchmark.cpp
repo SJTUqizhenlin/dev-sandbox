@@ -583,7 +583,7 @@ public:
         sqe.fftsType = RT_FFTS_PLUS_TYPE;
         sqe.totalContextNum = static_cast<uint16_t>(contexts_.size());
         sqe.readyContextNum = readyContextNum;
-        sqe.preloadContextNum = std::min<uint16_t>(readyContextNum, kContextMaxNum);
+        sqe.preloadContextNum = std::min<uint16_t>(sqe.totalContextNum, kContextMaxNum);
         sqe.timeout = 0;
         sqe.subType = kFftsCommunicationTask;
 
