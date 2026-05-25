@@ -164,6 +164,23 @@ public:
             rtFftsPlusTaskLaunchWithFlag(&task, reinterpret_cast<rtStream_t>(stream), 0));
     }
 
+#ifdef COPY_FFTS_DISPATCHER_TESTING
+    size_t ContextCountForTest() const { return contexts_.size(); }
+
+    const rtFftsPlusComCtx_t& ContextForTest(size_t index) const
+    {
+        ASSERT(index < contexts_.size());
+        return contexts_[index];
+    }
+
+    const rtFftsPlusComCtx_t* DescBufForTest() const { return contexts_.data(); }
+
+    size_t DescBufLenForTest() const
+    {
+        return sizeof(rtFftsPlusComCtx_t) * contexts_.size();
+    }
+#endif
+
 private:
     static uint16_t MaxReadyLanes()
     {

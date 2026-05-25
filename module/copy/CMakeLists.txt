@@ -34,3 +34,15 @@ else()
 endif()
 
 target_sources(copy PRIVATE ${RUNTIME_SOURCE_FILES})
+
+if(BUILD_TESTING AND RUNTIME_BACKEND STREQUAL "Ascend" AND HAVE_ASCEND_FFTS_RUNTIME)
+    add_executable(copy_ffts_dispatcher_test ascend/ffts_d2d_dispatcher_test.cc)
+    target_compile_definitions(copy_ffts_dispatcher_test PRIVATE COPY_FFTS_DISPATCHER_TESTING)
+    target_include_directories(copy_ffts_dispatcher_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${ASCEND_FFTS_INCLUDE_DIRS})
+    target_link_libraries(copy_ffts_dispatcher_test PRIVATE
+        Ascend::Runtime
+        "${ASCEND_RUNTIME_LIBRARY}")
+    add_test(NAME copy_ffts_dispatcher_test COMMAND copy_ffts_dispatcher_test)
+endif()
