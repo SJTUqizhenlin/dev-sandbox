@@ -68,6 +68,35 @@ case。
 | case | 传输方向 | 说明 |
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
+| `ascend_h2d_ffts_yuanrong_pipeline` | host -> fragmented device | Yuanrong 风格两段式 H2D，先 H2D 到 device staging，再用 FFTS 拆到 fragmented device buffer |
+
+#### 运行 Yuanrong pipeline H2D
+
+数据一致性校验：
+
+```bash
+COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t ascend_h2d_ffts_yuanrong_pipeline -s 37K -n 1024 -i 4 -d 1
+```
+
+性能测试：
+
+```bash
+COPY_FFTS_VALIDATE=0 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t ascend_h2d_ffts_yuanrong_pipeline -s 37K -n 1024 -i 128 -d 1
+```
+
+扫描 `COPY_FFTS_PIPELINE_OBJECT_FRAGS` 并和 `ascend_h2d_ffts_split` 比较：
+
+```bash
+python3 module/copy/ascend/scripts/run_h2d_ffts_object_frags_sweep.py \
+  --copy-bin ./build/module/copy/copy \
+  --io-size 37K \
+  --buffer-num 1024 \
+  --object-frags 1,2,4,8,16,32,64,128 \
+  --iterations 128 \
+  --device-count 1
+```
 
 ### GDR
 
