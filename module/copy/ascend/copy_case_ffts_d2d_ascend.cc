@@ -21,9 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  * */
+#include <algorithm>
 #include <cstdint>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <string>
 #include <vector>
 #include "copy_buffer_ascend.h"
 #include "copy_case.h"
@@ -41,6 +45,24 @@ bool FftsValidationEnabled()
     return std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
            std::strcmp(value, "TRUE") == 0 || std::strcmp(value, "on") == 0 ||
            std::strcmp(value, "ON") == 0;
+}
+
+size_t ReadFftsPipelineObjectFrags()
+{
+    constexpr size_t kDefaultObjectFrags = 8;
+    const char* value = std::getenv("COPY_FFTS_PIPELINE_OBJECT_FRAGS");
+    if (value == nullptr || value[0] == '\0') { return kDefaultObjectFrags; }
+
+    char* end = nullptr;
+    errno = 0;
+    const auto parsed = std::strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0' || parsed == 0) {
+        return kDefaultObjectFrags;
+    }
+    if (parsed > static_cast<unsigned long long>(std::numeric_limits<size_t>::max())) {
+        return std::numeric_limits<size_t>::max();
+    }
+    return static_cast<size_t>(parsed);
 }
 
 std::vector<uint8_t> MakePattern(size_t fragmentIndex, size_t size)
@@ -183,6 +205,27 @@ DEFINE_COPY_CASE(AscendH2DFFTSSplitCase, "ascend_h2d_ffts_split",
         ValidateDeviceBufferIfEnabled(dstBuffer);
     }
     result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(AscendH2DFFTSYuanrongPipelineCase, "ascend_h2d_ffts_yuanrong_pipeline",
+                 "copy host buffers to fragmented device buffers with yuanrong-style h2d and ffts pipeline",
+                 ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSYuanrongPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief() +
+                " [object_frags=" + std::to_string(effectiveObjectFrags) + "]");
 }
 
 DEFINE_COPY_CASE(AscendFFTSMergeD2HCase, "ascend_ffts_merge_d2h",

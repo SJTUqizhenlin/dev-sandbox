@@ -15,9 +15,13 @@ from typing import Optional
 
 CASE_SPECS = [
     ("h2d_ffts", "ascend_h2d_ffts_split", "H2D+FFTS"),
+    ("h2d_ffts_pipe", "ascend_h2d_ffts_yuanrong_pipeline", "H2D+YPipe"),
     ("ce", "host_to_device_ce", "CE"),
     ("ce_ms", "host_to_device_ce_multi_stream", "CE multi-stream"),
 ]
+
+FFTS_CASE_IDS = ("h2d_ffts", "h2d_ffts_pipe")
+PIPELINE_CASE_ID = "h2d_ffts_pipe"
 
 RESULT_RE = re.compile(
     r"^\s*(?P<prefix>.+?)\s+"
@@ -39,6 +43,7 @@ RAW_FIELDS = [
     "iterations",
     "device_count",
     "ffts_lanes",
+    "ffts_object_frags",
     "repeat",
     "case_id",
     "copy_case",
@@ -69,6 +74,7 @@ AGG_FIELDS = [
     "iterations",
     "device_count",
     "ffts_lanes",
+    "ffts_object_frags",
     "case_id",
     "copy_case",
     "case_label",
@@ -140,6 +146,15 @@ def command_prefix(extra_env: Optional[dict[str, str]] = None) -> str:
     return " ".join(f"{key}={value}" for key, value in env_items)
 
 
+def case_extra_env(args, case_id: str, extra_env: Optional[dict[str, str]] = None) -> dict[str, str]:
+    env = {}
+    if case_id == PIPELINE_CASE_ID:
+        env["COPY_FFTS_PIPELINE_OBJECT_FRAGS"] = str(args.pipeline_object_frags)
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
 def run_one(args, out_dir: Path, experiment: str, x_value: str, io_size: str, buffer_num: int,
             repeat: int, case_id: str, copy_case: str, case_label: str,
             ffts_lanes: str = "", extra_env: Optional[dict[str, str]] = None) -> dict[str, str]:
@@ -188,6 +203,7 @@ def run_one(args, out_dir: Path, experiment: str, x_value: str, io_size: str, bu
         "iterations": str(args.iterations),
         "device_count": str(args.device_count),
         "ffts_lanes": ffts_lanes,
+        "ffts_object_frags": (extra_env or {}).get("COPY_FFTS_PIPELINE_OBJECT_FRAGS", ""),
         "repeat": str(repeat),
         "case_id": case_id,
         "copy_case": copy_case,
@@ -233,6 +249,7 @@ def aggregate_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
             row["iterations"],
             row["device_count"],
             row["ffts_lanes"],
+            row["ffts_object_frags"],
             row["case_id"],
             row["copy_case"],
             row["case_label"],
@@ -250,9 +267,10 @@ def aggregate_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
             "iterations": key[5],
             "device_count": key[6],
             "ffts_lanes": key[7],
-            "case_id": key[8],
-            "copy_case": key[9],
-            "case_label": key[10],
+            "ffts_object_frags": key[8],
+            "case_id": key[9],
+            "copy_case": key[10],
+            "case_label": key[11],
             "repeats": str(len(items)),
             "submit_avg_us": f"{mean([float(item['submit_avg_us']) for item in items]):.3f}",
             "copy_avg_us": f"{mean([float(item['copy_avg_us']) for item in items]):.3f}",
@@ -287,7 +305,7 @@ def aggregate_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         float(lane_baselines["ce_ms"]["bw_gbs"]) if "ce_ms" in lane_baselines else math.nan
     )
     for row in aggregate:
-        if row["experiment"] != "lane_sweep" or row["case_id"] != "h2d_ffts":
+        if row["experiment"] != "lane_sweep" or row["case_id"] not in FFTS_CASE_IDS:
             continue
         bw = float(row["bw_gbs"])
         row["speedup_vs_ce"] = f"{bw / ce_bw:.6f}" if ce_bw > 0 else ""
@@ -312,7 +330,7 @@ def print_terminal_summary(aggregate: list[dict[str, str]]) -> None:
     print()
     print("[summary]")
     header = (
-        f"{'experiment':<12} {'x':<8} {'case':<16} {'submit_us':>10} "
+        f"{'experiment':<12} {'x':<8} {'case':<16} {'obj':>6} {'submit_us':>10} "
         f"{'copy_us':>10} {'bw_gbs':>10} {'vs_ce':>9} {'vs_ce_ms':>9}"
     )
     print(header)
@@ -320,8 +338,9 @@ def print_terminal_summary(aggregate: list[dict[str, str]]) -> None:
     for row in aggregate:
         print(
             f"{row['experiment']:<12} {row['x_value']:<8} {row['case_label']:<16} "
-            f"{float(row['submit_avg_us']):>10.3f} {float(row['copy_avg_us']):>10.3f} "
-            f"{float(row['bw_gbs']):>10.3f} {row['speedup_vs_ce']:>9} "
+            f"{row['ffts_object_frags']:>6} {float(row['submit_avg_us']):>10.3f} "
+            f"{float(row['copy_avg_us']):>10.3f} {float(row['bw_gbs']):>10.3f} "
+            f"{row['speedup_vs_ce']:>9} "
             f"{row['speedup_vs_ce_ms']:>9}"
         )
 
@@ -381,13 +400,17 @@ def plot_results(out_dir: Path, aggregate: list[dict[str, str]]) -> list[Path]:
 
     lane_rows = [row for row in aggregate if row["experiment"] == "lane_sweep"]
     if lane_rows:
-        ffts_rows = sorted(
-            [
-                row for row in lane_rows
-                if row["case_id"] == "h2d_ffts" and row["ffts_lanes"]
-            ],
-            key=lambda row: int(row["ffts_lanes"]),
-        )
+        ffts_rows_by_case = {
+            case_id: sorted(
+                [
+                    row for row in lane_rows
+                    if row["case_id"] == case_id and row["ffts_lanes"]
+                ],
+                key=lambda row: int(row["ffts_lanes"]),
+            )
+            for case_id, _, _ in CASE_SPECS
+            if case_id in FFTS_CASE_IDS
+        }
         baselines = {
             row["case_id"]: row
             for row in lane_rows
@@ -399,15 +422,21 @@ def plot_results(out_dir: Path, aggregate: list[dict[str, str]]) -> list[Path]:
             ("copy_avg_us", "Copy time avg (us)", "lane_sweep_copy_time.png"),
             ("submit_avg_us", "Submit time avg (us)", "lane_sweep_submit_time.png"),
         ):
-            if not ffts_rows:
+            if not any(ffts_rows_by_case.values()):
                 continue
-            x_values = [int(row["ffts_lanes"]) for row in ffts_rows]
-            y_values = [float(row[metric]) for row in ffts_rows]
 
             plt.figure(figsize=(9, 5.2))
-            plt.plot(x_values, y_values, marker="o", linewidth=2, label="H2D+FFTS")
+            x_tick_values = []
             for case_id, _, case_label in CASE_SPECS:
-                if case_id == "h2d_ffts" or case_id not in baselines:
+                case_rows = ffts_rows_by_case.get(case_id, [])
+                if not case_rows:
+                    continue
+                x_values = [int(row["ffts_lanes"]) for row in case_rows]
+                x_tick_values.extend(x_values)
+                y_values = [float(row[metric]) for row in case_rows]
+                plt.plot(x_values, y_values, marker="o", linewidth=2, label=case_label)
+            for case_id, _, case_label in CASE_SPECS:
+                if case_id in FFTS_CASE_IDS or case_id not in baselines:
                     continue
                 plt.axhline(
                     float(baselines[case_id][metric]),
@@ -419,7 +448,8 @@ def plot_results(out_dir: Path, aggregate: list[dict[str, str]]) -> list[Path]:
             plt.grid(True, linestyle="--", alpha=0.35)
             plt.xlabel("FFTS ready lanes")
             plt.ylabel(ylabel)
-            plt.xticks(x_values, [str(value) for value in x_values])
+            x_tick_values = sorted(set(x_tick_values))
+            plt.xticks(x_tick_values, [str(value) for value in x_tick_values])
             plt.title(f"H2D lane sweep {ylabel}")
             plt.legend()
             plt.tight_layout()
@@ -441,7 +471,7 @@ def write_analysis(out_dir: Path, aggregate: list[dict[str, str]], plot_paths: l
         "",
         "## Scope",
         "",
-        "- Cases: H2D+FFTS, CE, CE multi-stream.",
+        "- Cases: H2D+FFTS, H2D+YPipe, CE, CE multi-stream.",
         "- `copy_avg_us` and `bw_gbs` are taken from the `copy` benchmark output.",
         "- `speedup_vs_ce` and `speedup_vs_ce_ms` use bandwidth ratios.",
         "",
@@ -469,30 +499,35 @@ def write_analysis(out_dir: Path, aggregate: list[dict[str, str]], plot_paths: l
             best = rows[0]
             ce = next((row for row in rows if row["case_id"] == "ce"), None)
             ce_ms = next((row for row in rows if row["case_id"] == "ce_ms"), None)
-            ffts = next((row for row in rows if row["case_id"] == "h2d_ffts"), None)
             lines.append(
                 f"- `{key[1]}` best is `{best['case_label']}` at "
                 f"{float(best['bw_gbs']):.3f} GB/s."
             )
-            if ffts and ce:
-                lines.append(
-                    f"  `H2D+FFTS / CE = {float(ffts['speedup_vs_ce']):.3f}`."
-                )
-            if ffts and ce_ms:
-                lines.append(
-                    f"  `H2D+FFTS / CE multi-stream = "
-                    f"{float(ffts['speedup_vs_ce_ms']):.3f}`."
-                )
+            for case_id in FFTS_CASE_IDS:
+                ffts = next((row for row in rows if row["case_id"] == case_id), None)
+                if ffts and ce:
+                    lines.append(
+                        f"  `{ffts['case_label']} / CE = "
+                        f"{float(ffts['speedup_vs_ce']):.3f}`."
+                    )
+                if ffts and ce_ms:
+                    lines.append(
+                        f"  `{ffts['case_label']} / CE multi-stream = "
+                        f"{float(ffts['speedup_vs_ce_ms']):.3f}`."
+                    )
         lines.append("")
 
     lane_rows = [row for row in aggregate if row["experiment"] == "lane_sweep"]
-    ffts_lane_rows = sorted(
-        [
-            row for row in lane_rows
-            if row["case_id"] == "h2d_ffts" and row["ffts_lanes"]
-        ],
-        key=lambda row: int(row["ffts_lanes"]),
-    )
+    ffts_lane_rows_by_case = {
+        case_id: sorted(
+            [
+                row for row in lane_rows
+                if row["case_id"] == case_id and row["ffts_lanes"]
+            ],
+            key=lambda row: int(row["ffts_lanes"]),
+        )
+        for case_id in FFTS_CASE_IDS
+    }
     if lane_rows:
         lines.append("### lane_sweep")
         lines.append("")
@@ -510,35 +545,38 @@ def write_analysis(out_dir: Path, aggregate: list[dict[str, str]], plot_paths: l
                 f"- `CE multi-stream baseline = "
                 f"{float(baselines['ce_ms']['bw_gbs']):.3f} GB/s`."
             )
-        if ffts_lane_rows:
+        for case_id, ffts_lane_rows in sorted(ffts_lane_rows_by_case.items()):
+            if not ffts_lane_rows:
+                continue
             best_bw = max(ffts_lane_rows, key=lambda row: float(row["bw_gbs"]))
             best_copy = min(ffts_lane_rows, key=lambda row: float(row["copy_avg_us"]))
             best_submit = min(ffts_lane_rows, key=lambda row: float(row["submit_avg_us"]))
+            label = best_bw["case_label"]
             lines.append(
-                f"- Best bandwidth lane is `{best_bw['ffts_lanes']}` at "
+                f"- `{label}` best bandwidth lane is `{best_bw['ffts_lanes']}` at "
                 f"{float(best_bw['bw_gbs']):.3f} GB/s."
             )
             lines.append(
-                f"- Lowest copy time lane is `{best_copy['ffts_lanes']}` at "
+                f"- `{label}` lowest copy time lane is `{best_copy['ffts_lanes']}` at "
                 f"{float(best_copy['copy_avg_us']):.3f} us."
             )
             lines.append(
-                f"- Lowest submit time lane is `{best_submit['ffts_lanes']}` at "
+                f"- `{label}` lowest submit time lane is `{best_submit['ffts_lanes']}` at "
                 f"{float(best_submit['submit_avg_us']):.3f} us."
             )
             by_lane = {row["ffts_lanes"]: row for row in ffts_lane_rows}
             if "1" in by_lane and "32" in by_lane:
                 scale = float(by_lane["32"]["bw_gbs"]) / float(by_lane["1"]["bw_gbs"])
-                lines.append(f"- `lane 32 / lane 1 bandwidth = {scale:.3f}`.")
+                lines.append(f"- `{label} lane 32 / lane 1 bandwidth = {scale:.3f}`.")
             if best_bw["speedup_vs_ce"]:
                 lines.append(
-                    f"- Best lane `H2D+FFTS / CE = "
-                    f"{float(best_bw['speedup_vs_ce']):.3f}`."
+                    f"- `{label}` best lane / CE = "
+                    f"{float(best_bw['speedup_vs_ce']):.3f}."
                 )
             if best_bw["speedup_vs_ce_ms"]:
                 lines.append(
-                    f"- Best lane `H2D+FFTS / CE multi-stream = "
-                    f"{float(best_bw['speedup_vs_ce_ms']):.3f}`."
+                    f"- `{label}` best lane / CE multi-stream = "
+                    f"{float(best_bw['speedup_vs_ce_ms']):.3f}."
                 )
         lines.append("")
 
@@ -608,6 +646,12 @@ def parse_args() -> argparse.Namespace:
         default="1,2,4,8,16,32",
         help="Comma or semicolon separated FFTS ready lane counts for experiment 3.",
     )
+    parser.add_argument(
+        "--pipeline-object-frags",
+        type=int,
+        default=8,
+        help="Fragments per logical object for the yuanrong-style H2D pipeline case.",
+    )
     return parser.parse_args()
 
 
@@ -645,6 +689,7 @@ def main() -> int:
         f"buffer_num={args.lane_sweep_buffer_num}, lanes={lane_sweep_lanes}, "
         f"iterations={args.iterations}"
     )
+    print(f"[config] pipeline_object_frags={args.pipeline_object_frags}")
 
     for io_size in size_sweep_sizes:
         for repeat in range(1, args.repeats + 1):
@@ -661,6 +706,7 @@ def main() -> int:
                         case_id,
                         copy_case,
                         case_label,
+                        extra_env=case_extra_env(args, case_id),
                     )
                 )
 
@@ -679,13 +725,14 @@ def main() -> int:
                         case_id,
                         copy_case,
                         case_label,
+                        extra_env=case_extra_env(args, case_id),
                     )
                 )
 
     if lane_sweep_lanes:
         for repeat in range(1, args.repeats + 1):
             for case_id, copy_case, case_label in CASE_SPECS:
-                if case_id == "h2d_ffts":
+                if case_id in FFTS_CASE_IDS:
                     continue
                 rows.append(
                     run_one(
@@ -699,26 +746,32 @@ def main() -> int:
                         case_id,
                         copy_case,
                         case_label,
+                        extra_env=case_extra_env(args, case_id),
                     )
                 )
 
             for lane in lane_sweep_lanes:
-                rows.append(
-                    run_one(
-                        args,
-                        args.output_dir,
-                        "lane_sweep",
-                        str(lane),
-                        args.lane_sweep_size,
-                        args.lane_sweep_buffer_num,
-                        repeat,
-                        "h2d_ffts",
-                        "ascend_h2d_ffts_split",
-                        "H2D+FFTS",
-                        ffts_lanes=str(lane),
-                        extra_env={"FFTS_MAX_READY_LANES": str(lane)},
+                for case_id, copy_case, case_label in CASE_SPECS:
+                    if case_id not in FFTS_CASE_IDS:
+                        continue
+                    rows.append(
+                        run_one(
+                            args,
+                            args.output_dir,
+                            "lane_sweep",
+                            str(lane),
+                            args.lane_sweep_size,
+                            args.lane_sweep_buffer_num,
+                            repeat,
+                            case_id,
+                            copy_case,
+                            case_label,
+                            ffts_lanes=str(lane),
+                            extra_env=case_extra_env(
+                                args, case_id, {"FFTS_MAX_READY_LANES": str(lane)}
+                            ),
+                        )
                     )
-                )
 
     raw_csv = args.output_dir / "raw_results.csv"
     write_csv(raw_csv, rows, RAW_FIELDS)
