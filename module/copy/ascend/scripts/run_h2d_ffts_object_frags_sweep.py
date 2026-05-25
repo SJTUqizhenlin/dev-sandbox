@@ -24,7 +24,8 @@ RESULT_RE = re.compile(
     r"(?P<submit_avg>\d+)\s*/\s*(?P<submit_p50>\d+)\s*/\s*(?P<submit_p90>\d+)\s+"
     r"(?P<copy_min>\d+)\s*/\s*(?P<copy_max>\d+)\s*/\s*"
     r"(?P<copy_avg>\d+)\s*/\s*(?P<copy_p50>\d+)\s*/\s*(?P<copy_p90>\d+)\s+"
-    r"(?P<bw_gbs>\d+(?:\.\d+)?)\s*$"
+    r"(?P<bw_gbs>(?:\d+(?:\.\d+)?|[-+]?inf|[-+]?nan))\s*$",
+    re.IGNORECASE,
 )
 
 RAW_FIELDS = [
@@ -130,6 +131,13 @@ def parse_copy_output(output: str) -> dict[str, str]:
     return matches[0]
 
 
+def output_tail(output: str, max_lines: int = 16) -> str:
+    lines = output.splitlines()
+    if not lines:
+        return "<empty output>"
+    return "\n".join(lines[-max_lines:])
+
+
 def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else math.nan
 
@@ -183,7 +191,14 @@ def run_one(args, out_dir: Path, case_spec: tuple[str, str, str], repeat: int,
         print(completed.stdout)
         raise RuntimeError(f"command failed with exit code {completed.returncode}: {log_file}")
 
-    parsed = parse_copy_output(completed.stdout)
+    try:
+        parsed = parse_copy_output(completed.stdout)
+    except RuntimeError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        print(f"[error] output log: {log_file}", file=sys.stderr)
+        print("[error] output tail:", file=sys.stderr)
+        print(output_tail(completed.stdout), file=sys.stderr)
+        raise
     return {
         "case_id": case_id,
         "copy_case": copy_case,
