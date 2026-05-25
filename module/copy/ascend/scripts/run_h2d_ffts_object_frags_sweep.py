@@ -28,6 +28,19 @@ RESULT_RE = re.compile(
     re.IGNORECASE,
 )
 
+FUSED_RESULT_RE = re.compile(
+    r"^\s*(?P<prefix>.+?)\s+"
+    r"(?P<size_kb>\d+(?:\.\d+)?)\s+"
+    r"(?P<count>\d+)\s+"
+    r"(?P<submit_min>\d+)\s*/\s*(?P<submit_max>\d+)\s*/\s*"
+    r"(?P<submit_avg>\d+)\s*/\s*(?P<submit_p50>\d+)\s*/\s*"
+    r"(?P<fused>\d+)\s*/\s*"
+    r"(?P<copy_max>\d+)\s*/\s*(?P<copy_avg>\d+)\s*/\s*"
+    r"(?P<copy_p50>\d+)\s*/\s*(?P<copy_p90>\d+)\s+"
+    r"(?P<bw_gbs>(?:\d+(?:\.\d+)?|[-+]?inf|[-+]?nan))\s*$",
+    re.IGNORECASE,
+)
+
 RAW_FIELDS = [
     "case_id",
     "copy_case",
@@ -124,11 +137,37 @@ def parse_copy_output(output: str) -> dict[str, str]:
         match = RESULT_RE.match(line)
         if match:
             matches.append(match.groupdict())
+            continue
+        fused = parse_fused_copy_result(line)
+        if fused:
+            matches.append(fused)
     if not matches:
         raise RuntimeError("failed to parse copy result row from command output")
     if len(matches) > 1:
         raise RuntimeError("parsed more than one result row; use --device-count 1")
     return matches[0]
+
+
+def parse_fused_copy_result(line: str) -> Optional[dict[str, str]]:
+    match = FUSED_RESULT_RE.match(line)
+    if not match:
+        return None
+
+    row = match.groupdict()
+    fused = row.pop("fused")
+    submit_max = int(row["submit_max"])
+    submit_p50 = int(row["submit_p50"])
+    copy_avg = int(row["copy_avg"])
+    copy_max = int(row["copy_max"])
+
+    for split in range(1, len(fused)):
+        submit_p90 = int(fused[:split])
+        copy_min = int(fused[split:])
+        if submit_p50 <= submit_p90 <= submit_max and copy_min <= copy_avg <= copy_max:
+            row["submit_p90"] = str(submit_p90)
+            row["copy_min"] = str(copy_min)
+            return row
+    return None
 
 
 def output_tail(output: str, max_lines: int = 16) -> str:

@@ -82,13 +82,13 @@ public:
     {
         const std::string indentation = "  ";
         fmt::println(title);
-        fmt::println("{}{:<18}{:<18}{:<10}{:<10}{:<8}{:<40}{:<44}{}", indentation, "From", "To",
+        fmt::println("{}{:<18}{:<18}{:<10}{:<10}{:<8}{:<56}{:<56}{}", indentation, "From", "To",
                      "Method", "Size(KB)", "Count", "Submit(us)-(Min/Max/Avg/P50/P90)",
                      "Copy(us)-(Min/Max/Avg/P50/P90)", "BW(GB/s)");
         for (const auto& result : results_) {
             auto bw =
                 result.size * result.count * 1e6f / result.copy.avg / 1024.f / 1024.f / 1024.f;
-            fmt::println("{}{:<18}{:<18}{:<10}{:<10.0f}{:<8}{:<40}{:<44}{:.3f}", indentation,
+            fmt::println("{}{:<18}{:<18}{:<10}{:<10.0f}{:<8}{:<56}{:<56}{:.3f}", indentation,
                          result.src, result.dst, result.method, result.size / 1024.f, result.count,
                          result.submit.ToString(), result.copy.ToString(), bw);
         }
