@@ -80,8 +80,7 @@ public:
         completed_ = false;
     }
 
-    void AddMemcpy(void* dst, const void* src, size_t size, uint16_t threadId,
-                   uint16_t threadDim)
+    void AddMemcpy(void* dst, const void* src, size_t size)
     {
         ASSERT(!completed_);
         ASSERT(dst != nullptr);
@@ -92,7 +91,7 @@ public:
 
         rtFftsPlusComCtx_t comCtx{};
         auto* sdmaCtx = reinterpret_cast<rtFftsPlusSdmaCtx_t*>(&comCtx);
-        BuildSdmaCtx(dst, src, size, threadId, threadDim, sdmaCtx);
+        BuildSdmaCtx(dst, src, size, sdmaCtx);
         contexts_.push_back(comCtx);
     }
 
@@ -125,10 +124,9 @@ public:
         std::vector<int32_t> lastTaskId(laneCount, -1);
 
         for (size_t i = 0; i < copies.size(); ++i) {
-            const size_t lane = i % laneCount;
-            AddMemcpy(copies[i].dst, copies[i].src, copies[i].size,
-                      static_cast<uint16_t>(lane), laneCount);
+            AddMemcpy(copies[i].dst, copies[i].src, copies[i].size);
 
+            const size_t lane = i % laneCount;
             const uint32_t taskId = static_cast<uint32_t>(contexts_.size() - 1);
             if (lastTaskId[lane] >= 0) {
                 AddDependency(static_cast<uint32_t>(lastTaskId[lane]), taskId);
@@ -190,8 +188,7 @@ private:
         return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ptr));
     }
 
-    static void BuildSdmaCtx(void* dst, const void* src, size_t size, uint16_t threadId,
-                             uint16_t threadDim, rtFftsPlusSdmaCtx_t* ctx)
+    static void BuildSdmaCtx(void* dst, const void* src, size_t size, rtFftsPlusSdmaCtx_t* ctx)
     {
         constexpr uint32_t kShift = 32;
         constexpr uint64_t kLowMask = 0xFFFFFFFFULL;
@@ -200,8 +197,7 @@ private:
         const uint64_t dstAddr = PtrToU64(dst);
 
         ctx->contextType = RT_CTX_TYPE_SDMA;
-        ctx->threadId = threadId;
-        ctx->threadDim = threadDim;
+        ctx->threadDim = 1;
         ctx->sdmaSqeHeader = kFftsSdmaFp32AtomicMoveSqe;
         ctx->sourceAddressBaseL = static_cast<uint32_t>(srcAddr & kLowMask);
         ctx->sourceAddressBaseH = static_cast<uint32_t>(srcAddr >> kShift);
