@@ -19,7 +19,8 @@ if(RUNTIME_BACKEND STREQUAL "CUDA")
     endif()
 elseif(RUNTIME_BACKEND STREQUAL "Ascend")
     file(GLOB RUNTIME_SOURCE_FILES "ascend/*.cc" "ascend/*.h")
-    target_link_libraries(copy PRIVATE Ascend::Runtime)
+    find_package(Threads REQUIRED)
+    target_link_libraries(copy PRIVATE Ascend::Runtime Threads::Threads)
     list(REMOVE_ITEM RUNTIME_SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/ascend/copy_case_ffts_d2d_ascend.cc"
         "${CMAKE_CURRENT_SOURCE_DIR}/ascend/ffts_d2d_dispatcher_test.cc")

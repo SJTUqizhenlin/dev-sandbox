@@ -83,6 +83,26 @@ DEFINE_COPY_CASE(AllHost2AllDeviceCECase, "all_host_to_all_device_ce",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE(AllHost2AllDeviceCEMultiThreadCase, "all_host_to_all_device_ce_multi_thread",
+                 "memcpy from all host to all device with ce using one submit thread per device",
+                 ctx)
+{
+    std::vector<const CopyBuffer*> srcBuffers(ctx.nDevice);
+    std::vector<const CopyBuffer*> dstBuffers(ctx.nDevice);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        srcBuffers[device] = new HostCopyBuffer{device, ctx.size, ctx.num};
+        dstBuffers[device] = new DeviceCopyBuffer{device, ctx.size, ctx.num};
+    }
+    H2DCEParallelSubmitCopyInstance instance{ctx.iter, false};
+    CopyResult result;
+    result.Push(instance.DoCopyBatch(srcBuffers, dstBuffers));
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        delete srcBuffers[device];
+        delete dstBuffers[device];
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE(Device2DeviceCECase, "device_to_device_ce",
                  "memcpy from device to device with ce one by one", ctx)
 {

@@ -25,7 +25,13 @@
 #define COPY_INSTANCE_ASCEND_H
 
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 #include "copy_buffer.h"
@@ -160,6 +166,174 @@ public:
     }
 
     std::string Name() const override { return "CE"; }
+};
+
+class H2DCEParallelSubmitCopyInstance : public H2DCECopyInstance {
+protected:
+    struct SubmitWorker {
+        std::mutex mutex;
+        std::condition_variable ready;
+        std::condition_variable finished;
+        std::function<void()> task;
+        std::exception_ptr error;
+        bool hasTask = false;
+        bool done = true;
+        bool stop = false;
+        std::thread thread;
+    };
+
+    std::vector<std::unique_ptr<SubmitWorker>> submitWorkers_;
+
+    void Prepare(const std::vector<const CopyBuffer*>& srcBuffers,
+                 const std::vector<const CopyBuffer*>& dstBuffers) override
+    {
+        AscendCopyInstanceBase::Prepare(srcBuffers, dstBuffers);
+        StartSubmitWorkers(contexts_.size());
+    }
+
+    void Cleanup() override
+    {
+        StopSubmitWorkers();
+        AscendCopyInstanceBase::Cleanup();
+    }
+
+    std::pair<size_t, size_t> DoCopyOnce() override
+    {
+        using namespace std::chrono;
+
+        ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
+        ASCEND_ASSERT(aclrtRecordEvent(totalStart_, contexts_[0].stream));
+
+        for (size_t i = 1; i < contexts_.size(); i++) {
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[i].deviceId));
+            ASCEND_ASSERT(aclrtStreamWaitEvent(contexts_[i].stream, totalStart_));
+        }
+
+        auto submitStart = steady_clock::now();
+        SubmitContexts();
+        auto submitCost = duration_cast<microseconds>(steady_clock::now() - submitStart).count();
+
+        for (size_t i = 1; i < contexts_.size(); i++) {
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[i].deviceId));
+            ASCEND_ASSERT(aclrtRecordEvent(contexts_[i].endEvent, contexts_[i].stream));
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
+            ASCEND_ASSERT(aclrtStreamWaitEvent(contexts_[0].stream, contexts_[i].endEvent));
+        }
+
+        ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
+        ASCEND_ASSERT(aclrtRecordEvent(totalEnd_, contexts_[0].stream));
+        SynchronizeInternal(contexts_[0]);
+
+        float copyCostMs = 0.f;
+        ASCEND_ASSERT(aclrtEventElapsedTime(&copyCostMs, totalStart_, totalEnd_));
+        size_t copyCost = static_cast<size_t>(copyCostMs * 1000);
+
+        return {copyCost, submitCost};
+    }
+
+    void StartSubmitWorkers(size_t workerCount)
+    {
+        StopSubmitWorkers();
+        if (workerCount <= 1) { return; }
+
+        submitWorkers_.reserve(workerCount);
+        for (size_t index = 0; index < workerCount; ++index) {
+            auto worker = std::make_unique<SubmitWorker>();
+            auto* workerPtr = worker.get();
+            worker->thread = std::thread([workerPtr]() { SubmitWorkerLoop(workerPtr); });
+            submitWorkers_.emplace_back(std::move(worker));
+        }
+    }
+
+    void StopSubmitWorkers() noexcept
+    {
+        for (auto& worker : submitWorkers_) {
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                worker->stop = true;
+            }
+            worker->ready.notify_one();
+        }
+
+        for (auto& worker : submitWorkers_) {
+            if (worker->thread.joinable()) { worker->thread.join(); }
+        }
+        submitWorkers_.clear();
+    }
+
+    static void SubmitWorkerLoop(SubmitWorker* worker)
+    {
+        while (true) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(worker->mutex);
+                worker->ready.wait(lock, [worker]() { return worker->hasTask || worker->stop; });
+                if (worker->stop && !worker->hasTask) { return; }
+                task = std::move(worker->task);
+                worker->hasTask = false;
+            }
+
+            std::exception_ptr error;
+            try {
+                task();
+            } catch (...) {
+                error = std::current_exception();
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                worker->error = error;
+                worker->done = true;
+            }
+            worker->finished.notify_one();
+        }
+    }
+
+    void SubmitContexts()
+    {
+        if (contexts_.size() == 1) {
+            ASCEND_ASSERT(aclrtSetDevice(contexts_[0].deviceId));
+            CopyInternal(contexts_[0]);
+            return;
+        }
+
+        ASSERT(submitWorkers_.size() == contexts_.size());
+        for (size_t index = 0; index < contexts_.size(); ++index) {
+            auto* worker = submitWorkers_[index].get();
+            {
+                std::lock_guard<std::mutex> lock(worker->mutex);
+                ASSERT(!worker->hasTask);
+                worker->task = [this, index]() {
+                    ASCEND_ASSERT(aclrtSetDevice(contexts_[index].deviceId));
+                    CopyInternal(contexts_[index]);
+                };
+                worker->error = nullptr;
+                worker->done = false;
+                worker->hasTask = true;
+            }
+            worker->ready.notify_one();
+        }
+
+        std::exception_ptr error;
+        for (auto& worker : submitWorkers_) {
+            auto* workerPtr = worker.get();
+            std::unique_lock<std::mutex> lock(worker->mutex);
+            worker->finished.wait(lock, [workerPtr]() { return workerPtr->done; });
+            if (error == nullptr && worker->error != nullptr) { error = worker->error; }
+        }
+
+        if (error != nullptr) { std::rethrow_exception(error); }
+    }
+
+public:
+    H2DCEParallelSubmitCopyInstance(size_t iterations, bool affinitySrc)
+        : H2DCECopyInstance(iterations, affinitySrc)
+    {
+    }
+
+    ~H2DCEParallelSubmitCopyInstance() override { StopSubmitWorkers(); }
+
+    std::string Name() const override { return "CE-MT"; }
 };
 
 class H2DBatchCECopyInstance : public AscendCopyInstanceBase {

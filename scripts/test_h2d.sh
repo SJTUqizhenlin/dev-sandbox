@@ -67,6 +67,13 @@ for size in "${COPY_SIZES[@]}"; do
 done
 
 echo
+echo "========== multi-device threaded-submit H2D: copy all_host_to_all_device_ce_multi_thread =========="
+for size in "${COPY_SIZES[@]}"; do
+    run_and_log "copy-all2all-mt-${size}-d${DEVICES}" \
+        "${COPY_BIN}" -t all_host_to_all_device_ce_multi_thread -s "${size}" -n "${COPY_BLOCKS}" -i "${ITERS}" -d "${DEVICES}"
+done
+
+echo
 echo "========== multi-stream H2D: trans ms_48 =========="
 for size in "${TRANS_SIZES[@]}"; do
     run_and_log "trans-ms48-${size}" \
