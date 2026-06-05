@@ -45,6 +45,8 @@ case。
 | `host_to_device_ce` | CUDA / Ascend | host -> device | 逐设备 H2D 拷贝 |
 | `host_to_device_batch_ce` | CUDA / Ascend | host -> device | 使用 batch CE 提交 H2D 拷贝 |
 | `one_host_to_all_device_ce` | CUDA / Ascend | host0 -> all devices | 同一份 host buffer 依次拷贝到所有 device |
+| `huge_shm_to_device_ce` | Ascend | HugeTLB shared host -> device | 每个 device 使用一份 HugeTLB shared host buffer 做 H2D 拷贝 |
+| `one_huge_shm_to_all_device_ce` | Ascend | HugeTLB shared host0 -> all devices | 同一份 HugeTLB shared host buffer 依次拷贝到所有 device |
 | `all_host_to_all_device_ce` | CUDA / Ascend | host[i] -> device[i] | 多个 host/device buffer 一次批量提交 |
 | `device_to_device_ce` | CUDA / Ascend | device -> device | 单设备内 D2D 拷贝 |
 | `one_device_to_all_device_ce` | CUDA / Ascend | device0 -> all devices | 同一份 device buffer 依次拷贝到所有 device |
@@ -69,6 +71,7 @@ case。
 | --- | --- | --- |
 | `host_to_device_ce_multi_stream` | host -> device | 使用多 stream 提交 H2D 拷贝 |
 | `ascend_h2d_ffts_yuanrong_pipeline` | host -> fragmented device | Yuanrong 风格两段式 H2D，先 H2D 到 device staging，再用 FFTS 拆到 fragmented device buffer |
+| `ascend_huge_shm_h2d_ffts_yuanrong_pipeline` | HugeTLB shared host -> fragmented device | 使用 HugeTLB shared host buffer 作为 Yuanrong pipeline 的 H2D 源 |
 
 #### 运行 Yuanrong pipeline H2D
 
@@ -85,6 +88,27 @@ COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 COPY_FFTS_VALIDATE=0 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
 ./build/module/copy/copy -t ascend_h2d_ffts_yuanrong_pipeline -s 37K -n 1024 -i 128 -d 1
 ```
+
+HugeTLB shared host buffer 对比测试：
+
+```bash
+./build/module/copy/copy -t one_huge_shm_to_all_device_ce -s 2M -n 8 -i 128 -d 8
+```
+
+```bash
+COPY_FFTS_VALIDATE=1 COPY_FFTS_PIPELINE_OBJECT_FRAGS=8 \
+./build/module/copy/copy -t ascend_huge_shm_h2d_ffts_yuanrong_pipeline -s 37K -n 1024 -i 4 -d 1
+```
+
+HugeTLB shared host buffer 使用 `memfd_create` 申请 2MB HugeTLB 页，不需要提前挂载 hugetlbfs。
+运行时会消耗系统预留的 HugeTLB 池，可以在宿主机观察 `HugePages_Free` 的变化：
+
+```bash
+watch -n 0.2 'grep -i Huge /proc/meminfo'
+```
+
+申请页数约为 `ceil(size * count / 2MB)`。进程启动创建 buffer 后 `HugePages_Free` 会下降，进程退出释放 buffer 后会回升。
+`ShmemHugePages` 通常不会变化，它不是这个 HugeTLB memfd 路径的主要观测口径。
 
 扫描 `COPY_FFTS_PIPELINE_OBJECT_FRAGS` 并和 `ascend_h2d_ffts_split` 比较：
 
