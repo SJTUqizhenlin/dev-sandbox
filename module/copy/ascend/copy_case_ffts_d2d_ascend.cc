@@ -99,6 +99,9 @@ void InitializePatternedBuffer(const CopyBuffer& buffer)
 
 void* HostAddress(const CopyBuffer& buffer, size_t index)
 {
+    if (const auto* huge = dynamic_cast<const HugeSharedCopyBuffer*>(&buffer)) {
+        return huge->HostAt(index);
+    }
     if (const auto* mapped = dynamic_cast<const MallocHostRegisterCopyBuffer*>(&buffer)) {
         return mapped->HostAt(index);
     }
@@ -216,6 +219,28 @@ DEFINE_COPY_CASE(AscendH2DFFTSYuanrongPipelineCase, "ascend_h2d_ffts_yuanrong_pi
     const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
     for (size_t device = 0; device < ctx.nDevice; device++) {
         HostCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        InitializeHostPatternedBuffer(srcBuffer);
+        ResetBuffer(dstBuffer);
+
+        H2DFFTSYuanrongPipelineCopyInstance instance{ctx.iter, false, objectFrags};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+        ValidateDeviceBufferIfEnabled(dstBuffer);
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief() +
+                " [object_frags=" + std::to_string(effectiveObjectFrags) + "]");
+}
+
+DEFINE_COPY_CASE(AscendHugeShmH2DFFTSYuanrongPipelineCase,
+                 "ascend_huge_shm_h2d_ffts_yuanrong_pipeline",
+                 "copy HugeTLB shared host memory to fragmented device buffers with yuanrong-style h2d and ffts pipeline",
+                 ctx)
+{
+    CopyResult result;
+    const auto objectFrags = ReadFftsPipelineObjectFrags();
+    const auto effectiveObjectFrags = ctx.num == 0 ? objectFrags : std::min(objectFrags, ctx.num);
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HugeSharedCopyBuffer srcBuffer{device, ctx.size, ctx.num};
         FragmentedDeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
         InitializeHostPatternedBuffer(srcBuffer);
         ResetBuffer(dstBuffer);

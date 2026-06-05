@@ -64,6 +64,32 @@ DEFINE_COPY_CASE(OneHost2AllDeviceCECase, "one_host_to_all_device_ce",
     result.Show("[[ " + Key() + " ]] " + Brief());
 }
 
+DEFINE_COPY_CASE(HugeShm2DeviceCECase, "huge_shm_to_device_ce",
+                 "memcpy from HugeTLB shared host memory to device with ce one by one", ctx)
+{
+    CopyResult result;
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        HugeSharedCopyBuffer srcBuffer{device, ctx.size, ctx.num};
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCECopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
+DEFINE_COPY_CASE(OneHugeShm2AllDeviceCECase, "one_huge_shm_to_all_device_ce",
+                 "memcpy from one HugeTLB shared host memory to all device with ce", ctx)
+{
+    CopyResult result;
+    HugeSharedCopyBuffer srcBuffer{0, ctx.size, ctx.num};
+    for (size_t device = 0; device < ctx.nDevice; device++) {
+        DeviceCopyBuffer dstBuffer{device, ctx.size, ctx.num};
+        H2DCECopyInstance instance{ctx.iter, false};
+        result.Push(instance.DoCopy(&srcBuffer, &dstBuffer));
+    }
+    result.Show("[[ " + Key() + " ]] " + Brief());
+}
+
 DEFINE_COPY_CASE(AllHost2AllDeviceCECase, "all_host_to_all_device_ce",
                  "memcpy from all host to all device with ce at one time", ctx)
 {
