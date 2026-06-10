@@ -25,6 +25,8 @@ cmake --build build -j
 -n <count>  每个 buffer 内的数据块数量，默认 8
 -i <count>  迭代次数，默认 128
 -d <count>  设备数量，默认 8
+--huge-shm-mode <serial|parallel>
+            `huge_shm_to_device_ce` 的执行模式，默认 parallel
 ```
 
 查看当前后端可用 case：
@@ -141,6 +143,67 @@ GDR case 注册在 `copy` 主程序中。CUDA 后端可用且系统检测到 `li
 | `shm_to_all_host_memcpy` | shared memory -> all hosts | CPU `memcpy` 模拟共享内存到多个 host buffer |
 
 ## 环境变量
+
+### COPY_HUGE_SHM_DEVICE_CPUS / COPY_HUGE_SHM_DEVICE_NUMA
+
+`huge_shm_to_device_ce` 默认会为每个 device 启动一个 worker 线程。也可以通过
+`--huge-shm-mode serial` 切回逐卡顺序执行：
+
+```bash
+./build/module/copy/copy -t huge_shm_to_device_ce --huge-shm-mode serial
+```
+
+并发模式可以显式指定：
+
+```bash
+./build/module/copy/copy -t huge_shm_to_device_ce --huge-shm-mode parallel
+```
+
+并发模式下，可以用下面两个变量把每个
+worker 绑定到对应 NPU 本地 CPU 和 NUMA 内存节点，便于排查多卡并发 H2D 时的 NUMA 影响。
+
+`COPY_HUGE_SHM_DEVICE_CPUS` 使用分号分隔每个 device 的 CPU list：
+
+```bash
+COPY_HUGE_SHM_DEVICE_CPUS='0-23;144-167;48-71;144-167;48-71;0-23' \
+./build/module/copy/copy -t huge_shm_to_device_ce -d 6
+```
+
+`COPY_HUGE_SHM_DEVICE_NUMA` 使用逗号分隔每个 device 的 NUMA node。这个变量会强制 HugeTLB
+内存从对应 NUMA 节点分配，要求该节点有足够的本地 2MB huge pages：
+
+```bash
+COPY_HUGE_SHM_DEVICE_NUMA='0,6,2,6,2,0' \
+./build/module/copy/copy -t huge_shm_to_device_ce -d 6
+```
+
+两者可以同时设置：
+
+```bash
+COPY_HUGE_SHM_DEVICE_CPUS='0-23;144-167;48-71;144-167;48-71;0-23' \
+COPY_HUGE_SHM_DEVICE_NUMA='0,6,2,6,2,0' \
+./build/module/copy/copy -t huge_shm_to_device_ce -d 6
+```
+
+如果只是想固定提交线程位置，通常只设置 `COPY_HUGE_SHM_DEVICE_CPUS` 更稳。仓库也提供了按
+8 卡实际拓扑配置好的脚本，默认只绑 CPU，不强制 NUMA 内存绑定：
+
+```bash
+./scripts/run_huge_shm_to_device_ce_affinity.sh
+```
+
+需要同时绑定 HugeTLB 内存节点时显式加 `BIND_NUMA=1`，脚本会先检查每个 NUMA 节点的
+2MB huge page 数量是否足够：
+
+```bash
+BIND_NUMA=1 ./scripts/run_huge_shm_to_device_ce_affinity.sh
+```
+
+具体映射可以通过下面命令查看：
+
+```bash
+./scripts/show_npu_numa_topology.sh --visible
+```
 
 ### GDR_NICS
 

@@ -4,6 +4,11 @@ function(find_reachable_git_url OUT_REACHABLE_URL IN_URL_LIST)
         message(FATAL_ERROR "git not found!")
     endif()
 
+    set(GIT_PROBE_TIMEOUT 30)
+    if(DEFINED DEP_GIT_PROBE_TIMEOUT)
+        set(GIT_PROBE_TIMEOUT ${DEP_GIT_PROBE_TIMEOUT})
+    endif()
+
     if(DEFINED ${IN_URL_LIST})
         set(URL_LIST ${${IN_URL_LIST}})
     else()
@@ -15,7 +20,7 @@ function(find_reachable_git_url OUT_REACHABLE_URL IN_URL_LIST)
             COMMAND ${GIT_EXECUTABLE} ls-remote --heads "${GIT_URL}"
             RESULT_VARIABLE GIT_RESULT
             OUTPUT_QUIET ERROR_QUIET
-            TIMEOUT 5
+            TIMEOUT ${GIT_PROBE_TIMEOUT}
         )
         if(GIT_RESULT EQUAL 0)
             set(${OUT_REACHABLE_URL} ${GIT_URL} PARENT_SCOPE)
@@ -23,5 +28,5 @@ function(find_reachable_git_url OUT_REACHABLE_URL IN_URL_LIST)
         endif()
     endforeach()
 
-    message(FATAL_ERROR "All git URLs are not reachable!")
+    set(${OUT_REACHABLE_URL} "" PARENT_SCOPE)
 endfunction()

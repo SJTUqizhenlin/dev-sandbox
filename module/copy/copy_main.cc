@@ -23,13 +23,18 @@
  * */
 #include <charconv>
 #include <fmt/format.h>
+#include <string_view>
 #include <unordered_set>
 #include "copy_case.h"
 #include "copy_runtime.h"
 
 struct ArgsParser {
     std::unordered_set<std::string> names;
-    CopyCase::Context ctx{.size = 512ull * 1024ull * 1024ull, .num = 8, .iter = 128, .nDevice = 8};
+    CopyCase::Context ctx{.size = 512ull * 1024ull * 1024ull,
+                          .num = 8,
+                          .iter = 128,
+                          .nDevice = 8,
+                          .hugeShmParallel = true};
 
     static void Help(std::string_view proc)
     {
@@ -40,6 +45,9 @@ struct ArgsParser {
         fmt::println("  -n <count>       Data number (default: 8)");
         fmt::println("  -i <count>       Iteration count (default: 128)");
         fmt::println("  -d <count>       Number of devices (default: 8)");
+        fmt::println(
+            "  --huge-shm-mode <serial|parallel>  huge_shm_to_device_ce mode (default: "
+            "parallel)");
     }
     static std::size_t ParseUnsigned(std::string_view text, std::string_view errorMessage)
     {
@@ -84,6 +92,16 @@ struct ArgsParser {
                 ctx.iter = ParseUnsigned(argv[++i], "Invalid iteration count.");
             } else if (arg == "-d" && i + 1 < argc) {
                 ctx.nDevice = ParseUnsigned(argv[++i], "Invalid device count.");
+            } else if (arg == "--huge-shm-mode" && i + 1 < argc) {
+                const std::string_view mode{argv[++i]};
+                if (mode == "serial") {
+                    ctx.hugeShmParallel = false;
+                } else if (mode == "parallel") {
+                    ctx.hugeShmParallel = true;
+                } else {
+                    fmt::println("Invalid huge shm mode. Use serial or parallel.");
+                    std::exit(EXIT_FAILURE);
+                }
             } else {
                 Help(argv[0]);
                 std::exit(EXIT_FAILURE);
